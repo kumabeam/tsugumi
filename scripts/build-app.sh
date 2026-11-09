@@ -8,9 +8,10 @@ swift build -c release
 
 APP="build/Tsugumi.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Tsugumi "$APP/Contents/MacOS/Tsugumi"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # 開発者登録なしの簡易署名。ビルドし直すと macOS からは別のアプリに見えるため、
 # 画面収録とマイクの許可をやり直す必要がある。
@@ -22,6 +23,8 @@ tccutil reset Microphone io.github.kumabeam.tsugumi >/dev/null 2>&1 || true
 echo "作成: $APP"
 
 if [[ "${1:-}" == "--install" ]]; then
+    osascript -e 'quit app "Tsugumi"' 2>/dev/null || true
+    sleep 1
     pkill -x Tsugumi 2>/dev/null || true
     rm -rf /Applications/Tsugumi.app
     cp -R "$APP" /Applications/Tsugumi.app

@@ -24,6 +24,9 @@ scripts/build-app.sh            # build/Tsugumi.app を作る
 scripts/build-app.sh --install  # /Applications に入れて起動する
 ```
 
+アイコンは `scripts/make-icon.swift` が描いている（仮のもの）。描き直したら PNG を各サイズに縮小して
+`iconutil` で `Resources/AppIcon.icns` を作り直す。
+
 初回の録音開始時に「画面収録とシステムオーディオ録音」と「マイク」の許可を求められる。
 画面収録の許可は Mac から出る音を受け取るために必要なもので、画面そのものは記録していない。
 

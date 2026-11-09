@@ -10,6 +10,8 @@
     <string>Tsugumi</string>
     <key>CFBundleExecutable</key>
     <string>Tsugumi</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
