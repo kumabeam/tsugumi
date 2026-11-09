@@ -160,14 +160,31 @@ final class Pipeline {
     /// 文字起こしが済んだら、録音は小さい m4a にして作業用の WAV を消す。
     private nonisolated static func archive(_ prepared: Prepared, source: Session.Source, in folder: URL) {
         let files = FileManager.default
-        let workFiles = [Recorder.systemFile, Recorder.micFile, "stereo.wav", "import.wav"]
+        let workFiles = [Recorder.systemFile, Recorder.micFile, "stereo.wav", "mix.wav", "import.wav"]
             .map { folder.appendingPathComponent($0) }
 
         if source == .recording {
+            // 保存するのは聞き返し用。左右に分けた音は話者の判定にしか使わないので、
+            // 相手と自分を混ぜて、両耳から普通に聞こえる1本にする
+            var listening = prepared.wav
+            if prepared.diarize {
+                let mix = folder.appendingPathComponent("mix.wav")
+                do {
+                    try Wav.mix(
+                        folder.appendingPathComponent(Recorder.systemFile),
+                        folder.appendingPathComponent(Recorder.micFile),
+                        to: mix
+                    )
+                    listening = mix
+                } catch {
+                    return
+                }
+            }
+
             let audio = folder.appendingPathComponent(Session.audioFile)
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-            process.arguments = ["-f", "m4af", "-d", "aac", prepared.wav.path, audio.path]
+            process.arguments = ["-f", "m4af", "-d", "aac", listening.path, audio.path]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             do {

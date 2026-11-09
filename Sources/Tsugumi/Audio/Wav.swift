@@ -74,6 +74,41 @@ enum Wav {
         return peak
     }
 
+    /// 2本のモノラルを足し合わせて、1本のモノラルにする（聞き返し用）。
+    /// 短い方は無音として扱う。
+    static func mix(_ first: URL, _ second: URL, to output: URL) throws {
+        let frames = max(monoFrames(first), monoFrames(second))
+        FileManager.default.createFile(atPath: output.path, contents: header(channels: 1, dataBytes: frames * 2))
+        let out = try FileHandle(forWritingTo: output)
+        defer { try? out.close() }
+        try out.seekToEnd()
+
+        let firstHandle = try FileHandle(forReadingFrom: first)
+        let secondHandle = try FileHandle(forReadingFrom: second)
+        defer { try? firstHandle.close(); try? secondHandle.close() }
+        try firstHandle.seek(toOffset: UInt64(headerSize))
+        try secondHandle.seek(toOffset: UInt64(headerSize))
+
+        let framesPerChunk = chunkBytes / 2
+        var written = 0
+        while written < frames {
+            let count = min(framesPerChunk, frames - written)
+            let firstData = try firstHandle.read(upToCount: count * 2) ?? Data()
+            let secondData = try secondHandle.read(upToCount: count * 2) ?? Data()
+            var sums = [Int32](repeating: 0, count: count)
+            for data in [firstData, secondData] {
+                data.withUnsafeBytes { raw in
+                    let samples = raw.bindMemory(to: Int16.self)
+                    for index in 0..<min(count, samples.count) { sums[index] += Int32(samples[index]) }
+                }
+            }
+            // 足して範囲を超えた分は上限で止める（音割れを最小にする）
+            let mixed = sums.map { Int16(clamping: $0) }
+            try mixed.withUnsafeBufferPointer { try out.write(contentsOf: Data(buffer: $0)) }
+            written += count
+        }
+    }
+
     /// 2本のモノラルを1本のステレオにまとめる（左 = left、右 = right）。
     /// 短い方は無音で埋める。
     static func interleave(left: URL, right: URL, to output: URL) throws {

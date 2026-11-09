@@ -55,7 +55,7 @@ tccutil reset Microphone io.github.kumabeam.tsugumi
 ```
 2026-11-09_1430/
 ├── transcript.md   文字起こし（時刻と「相手／自分」付き）
-├── audio.m4a       録音（左 = 相手、右 = 自分）
+├── audio.m4a       録音（聞き返し用。相手と自分の声を1本に混ぜてある）
 └── session.json    状態の記録
 ```
 
