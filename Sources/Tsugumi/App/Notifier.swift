@@ -9,6 +9,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// 「会議を検知」の通知がクリックされたとき
     var onStartRequested: (() -> Void)?
+    /// 文字起こし完了などの通知がクリックされたとき（会議フォルダが渡る）
+    var onOpenSession: ((URL) -> Void)?
 
     /// .app として起動していないとき（開発中のコマンド実行など）は通知を使えない
     private let available = Bundle.main.bundleIdentifier != nil
@@ -63,7 +65,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             if isMeeting {
                 if !dismissed { self.onStartRequested?() }
             } else if let folder {
-                NSWorkspace.shared.open(URL(fileURLWithPath: folder))
+                self.onOpenSession?(URL(fileURLWithPath: folder))
             }
         }
     }

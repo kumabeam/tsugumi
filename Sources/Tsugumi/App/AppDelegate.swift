@@ -1,10 +1,11 @@
 import AppKit
 import AVFoundation
 import Carbon.HIToolbox
+import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private enum State {
         case idle
         case starting
@@ -18,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let pipeline = Pipeline()
     private let notifier = Notifier()
     private let micMonitor = MicActivityMonitor()
+    private lazy var library = LibraryModel(store: store)
+    private var libraryWindow: NSWindow?
 
     private var statusItem: NSStatusItem!
     private var recorder: Recorder?
@@ -48,6 +51,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pipeline.onChange = { [weak self] in self?.render() }
         pipeline.onFinished = { [weak self] session, error in self?.transcriptionFinished(session, error: error) }
         notifier.onStartRequested = { [weak self] in self?.startRecording() }
+        notifier.onOpenSession = { [weak self] folder in self?.showLibrary(selecting: folder) }
+        library.actions = .init(
+            toggleRecording: { [weak self] in self?.toggleRecording() },
+            retry: { [weak self] session in self?.retry(session) },
+            importFiles: { [weak self] urls in self?.importFiles(urls) }
+        )
+        NSApp.mainMenu = Self.makeMainMenu()
         notifier.setUp()
 
         // ⌃⌥⌘R で録音の開始／停止
@@ -59,11 +69,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         render()
         resumeUnfinished()
+        showLibrary()
         do {
             _ = try WhisperTools.locate()
         } catch {
             showAlert(title: "文字起こしの準備ができていません", message: error.localizedDescription)
         }
+    }
+
+    /// 起動済みのアプリをもう一度開いたとき（Finder でダブルクリックなど）
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showLibrary()
+        return false
+    }
+
+    // MARK: - 録音一覧ウィンドウ
+
+    private func showLibrary(selecting folder: URL? = nil) {
+        library.reload()
+        if let folder { library.selection = folder.path }
+
+        if libraryWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 980, height: 640),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered, defer: false
+            )
+            window.title = "Tsugumi"
+            window.contentViewController = NSHostingController(rootView: LibraryView(model: library))
+            window.setContentSize(NSSize(width: 980, height: 640))
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            window.setFrameAutosaveName("Library")
+            libraryWindow = window
+        }
+        // ウィンドウを出している間だけ、Dock とメニューを持つ普通のアプリとして振る舞う
+        NSApp.setActivationPolicy(.regular)
+        libraryWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openLibrary() {
+        showLibrary()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        library.player.pause()
+        // 閉じたらメニューバーだけの常駐に戻る
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    /// コピー＆ペーストや ⌘W など、標準のキー操作を効かせるためのメニュー。
+    private static func makeMainMenu() -> NSMenu {
+        let main = NSMenu()
+
+        func submenu(_ title: String, _ items: [(String, Selector, String, NSEvent.ModifierFlags)?]) {
+            let menu = NSMenu(title: title)
+            for item in items {
+                guard let (label, action, key, modifiers) = item else {
+                    menu.addItem(.separator())
+                    continue
+                }
+                let entry = menu.addItem(withTitle: label, action: action, keyEquivalent: key)
+                entry.keyEquivalentModifierMask = modifiers
+            }
+            let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            holder.submenu = menu
+            main.addItem(holder)
+        }
+
+        submenu("Tsugumi", [
+            ("Tsugumi を終了", #selector(NSApplication.terminate(_:)), "q", .command),
+        ])
+        submenu("編集", [
+            ("取り消す", Selector(("undo:")), "z", .command),
+            ("やり直す", Selector(("redo:")), "z", [.command, .shift]),
+            nil,
+            ("カット", #selector(NSText.cut(_:)), "x", .command),
+            ("コピー", #selector(NSText.copy(_:)), "c", .command),
+            ("ペースト", #selector(NSText.paste(_:)), "v", .command),
+            ("すべてを選択", #selector(NSText.selectAll(_:)), "a", .command),
+        ])
+        submenu("ウインドウ", [
+            ("閉じる", #selector(NSWindow.performClose(_:)), "w", .command),
+            ("しまう", #selector(NSWindow.performMiniaturize(_:)), "m", .command),
+        ])
+        return main
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -143,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 self.recorder = recorder
                 state = .recording(session, since: Date())
+                library.reload()
                 timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                     Task { @MainActor in self?.render() }
                 }
@@ -183,6 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? session.save()
         state = .idle
         pipeline.enqueue(session)
+        library.reload()
         render()
     }
 
@@ -214,12 +308,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 showAlert(title: "取り込めませんでした", message: error.localizedDescription)
             }
         }
+        library.reload()
         if !rejected.isEmpty {
             showAlert(title: "対応していない形式です", message: rejected.joined(separator: "\n"))
         }
     }
 
     private func transcriptionFinished(_ session: Session, error: Error?) {
+        library.reload()
         if let error {
             notifier.notify(title: "文字起こしに失敗しました", body: error.localizedDescription, openFolder: session.folder)
         } else {
@@ -249,6 +345,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - メニューバーの表示
 
     private func render() {
+        if case .recording(_, let since) = state {
+            library.setRecording(since: since)
+        } else {
+            library.setRecording(since: nil)
+        }
+        library.setTranscribing(id: pipeline.current?.folder.path, progress: pipeline.progress)
+
         guard let button = statusItem.button else { return }
         var symbol = "waveform"
         var title = ""
@@ -307,10 +410,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        add("録音一覧を開く", #selector(openLibrary))
         add("ファイルから文字起こし…", #selector(chooseFiles))
-        if latestTranscript() != nil {
-            add("最新の文字起こしを開く", #selector(openLatestTranscript))
-        }
         add("保存フォルダを開く", #selector(openBaseFolder))
         let failed = store.sessions(with: [.failed]).count
         if failed > 0 {
@@ -361,25 +462,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - メニューの操作
 
-    private func latestTranscript() -> URL? {
-        store.sessions(with: [.done]).last?.transcriptURL
-    }
-
-    @objc private func openLatestTranscript() {
-        if let url = latestTranscript() { NSWorkspace.shared.open(url) }
-    }
-
     @objc private func openBaseFolder() {
         try? FileManager.default.createDirectory(at: store.baseFolder, withIntermediateDirectories: true)
         NSWorkspace.shared.open(store.baseFolder)
     }
 
     @objc private func retryFailed() {
-        for var session in store.sessions(with: [.failed]) {
-            session.meta.status = .recorded
-            try? session.save()
-            pipeline.enqueue(session)
-        }
+        store.sessions(with: [.failed]).forEach(retry)
+    }
+
+    private func retry(_ failed: Session) {
+        var session = failed
+        session.meta.status = .recorded
+        session.meta.error = nil
+        try? session.save()
+        pipeline.enqueue(session)
+        library.reload()
     }
 
     @objc private func selectMicrophone(_ sender: NSMenuItem) {

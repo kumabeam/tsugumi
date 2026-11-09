@@ -4,6 +4,9 @@ import AppKit
 // `transcribe` / `record` を付けると、画面なしで同じ処理を動かせる（動作確認用）。
 MainActor.assumeIsolated {
     let arguments = Array(CommandLine.arguments.dropFirst())
+    if arguments.first == "snapshot" {
+        Snapshot.run(arguments)
+    }
     if let command = arguments.first, CommandLineMode.commands.contains(command) {
         CommandLineMode.run(arguments)
     }

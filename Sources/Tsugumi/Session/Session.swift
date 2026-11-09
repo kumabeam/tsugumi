@@ -18,6 +18,8 @@ struct Session {
 
     struct Meta: Codable {
         var startedAt: Date
+        /// 一覧に出す名前。付けていなければ日時から作る
+        var title: String?
         var source: Source
         var status: Status
         var originalFile: String?
@@ -35,6 +37,16 @@ struct Session {
     var meta: Meta
 
     var transcriptURL: URL { folder.appendingPathComponent(Self.transcriptFile) }
+
+    /// 聞き返しに使う音声。録音なら audio.m4a、取り込みなら元のファイル。
+    var audioURL: URL? {
+        let recorded = folder.appendingPathComponent(Self.audioFile)
+        if FileManager.default.fileExists(atPath: recorded.path) { return recorded }
+        if let original = meta.originalFile, FileManager.default.fileExists(atPath: original) {
+            return URL(fileURLWithPath: original)
+        }
+        return nil
+    }
 
     func save() throws {
         let encoder = JSONEncoder()

@@ -114,7 +114,7 @@ final class Transcriber: @unchecked Sendable {
 
         guard process.terminationStatus == 0, let data = try? Data(contentsOf: outputJSON) else {
             let detail = errorTail.withValue { $0 }.split(separator: "\n").suffix(3).joined(separator: " / ")
-            throw TsugumiError.message("文字起こしに失敗しました（終了コード \(process.terminationStatus)）\(detail)")
+            throw TsugumiError.message("whisper が途中で終了しました（終了コード \(process.terminationStatus)）\(detail)")
         }
         try? FileManager.default.removeItem(at: outputJSON)
 
