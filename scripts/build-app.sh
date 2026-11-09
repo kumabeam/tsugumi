@@ -13,13 +13,19 @@ cp .build/release/Tsugumi "$APP/Contents/MacOS/Tsugumi"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-# 開発者登録なしの簡易署名。ビルドし直すと macOS からは別のアプリに見えるため、
-# 画面収録とマイクの許可をやり直す必要がある。
-codesign --force --sign - --identifier io.github.kumabeam.tsugumi "$APP"
-
-# 前のビルドに出した許可は効かなくなっているので消しておく（残すと「許可済みなのに録れない」状態になる）
-tccutil reset ScreenCapture io.github.kumabeam.tsugumi >/dev/null 2>&1 || true
-tccutil reset Microphone io.github.kumabeam.tsugumi >/dev/null 2>&1 || true
+IDENTITY="${TSUGUMI_SIGN_IDENTITY:-Tsugumi Self-Signed}"
+if security find-identity -p codesigning 2>/dev/null | grep -q "\"$IDENTITY\""; then
+    # 決まった証明書で署名する。ビルドし直しても macOS から同じアプリとして扱われ、
+    # 画面収録とマイクの許可が引き継がれる（証明書は scripts/make-signing-cert.sh で作る）
+    codesign --force --sign "$IDENTITY" --identifier io.github.kumabeam.tsugumi "$APP"
+else
+    # 証明書が無いときは簡易署名。ビルドのたびに別のアプリに見えるので、許可はやり直しになる
+    codesign --force --sign - --identifier io.github.kumabeam.tsugumi "$APP"
+    # 前のビルドに出した許可は効かなくなっているので消しておく（残すと「許可済みなのに録れない」状態になる）
+    tccutil reset ScreenCapture io.github.kumabeam.tsugumi >/dev/null 2>&1 || true
+    tccutil reset Microphone io.github.kumabeam.tsugumi >/dev/null 2>&1 || true
+    echo "簡易署名でビルドしました（許可はやり直しになります）"
+fi
 echo "作成: $APP"
 
 if [[ "${1:-}" == "--install" ]]; then
