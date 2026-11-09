@@ -55,7 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         library.actions = .init(
             toggleRecording: { [weak self] in self?.toggleRecording() },
             retry: { [weak self] session in self?.retry(session) },
-            importFiles: { [weak self] urls in self?.importFiles(urls) }
+            importFiles: { [weak self] urls in self?.importFiles(urls) },
+            willDelete: { [weak self] session in self?.pipeline.discard(folder: session.folder) }
         )
         NSApp.mainMenu = Self.makeMainMenu()
         // Dock と ⌘Tab に出るアイコンを明示する。起動後に「普通のアプリ」へ切り替える作りだと、

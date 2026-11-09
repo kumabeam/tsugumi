@@ -38,6 +38,8 @@ final class LibraryModel: ObservableObject {
         var toggleRecording: () -> Void = {}
         var retry: (Session) -> Void = { _ in }
         var importFiles: ([URL]) -> Void = { _ in }
+        /// 録音をゴミ箱に入れる直前（文字起こし待ちから外すため）
+        var willDelete: (Session) -> Void = { _ in }
     }
 
     @Published private(set) var items: [Item] = []
@@ -152,6 +154,7 @@ final class LibraryModel: ObservableObject {
     /// ゴミ箱に入れる（Finder から戻せる）。
     func moveToTrash(_ item: Item) {
         if item.id == selection { player.load(nil) }
+        actions.willDelete(item.session)
         try? FileManager.default.trashItem(at: item.session.folder, resultingItemURL: nil)
         reload()
     }

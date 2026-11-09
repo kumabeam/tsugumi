@@ -14,7 +14,10 @@ enum CommandLineMode {
         Task { @MainActor in
             do {
                 if arguments[0] == "selftest", arguments.count == 2 {
-                    exit(try SelfTest.run(folder: URL(fileURLWithPath: arguments[1])) ? 0 : 1)
+                    let folder = URL(fileURLWithPath: arguments[1])
+                    let audio = try SelfTest.run(folder: folder)
+                    let queue = try await SelfTest.runQueueGuard(folder: folder)
+                    exit(audio && queue ? 0 : 1)
                 }
                 guard arguments.count == (arguments[0] == "resume" ? 2 : 3), let folder = arguments.last else {
                     throw TsugumiError.message("使い方: Tsugumi transcribe <ファイル> <出力フォルダ> / record <秒数> <出力フォルダ> / resume <出力フォルダ>")
@@ -42,7 +45,12 @@ enum CommandLineMode {
         case "record":
             return [try await record(seconds: Double(arguments[1]) ?? 5, store: store)]
         default:
-            return store.sessions(with: [.recording, .recorded])
+            return try store.sessions(with: [.recording, .recorded]).map { found in
+                var session = found
+                session.meta.status = .recorded
+                try session.save()
+                return session
+            }
         }
     }
 

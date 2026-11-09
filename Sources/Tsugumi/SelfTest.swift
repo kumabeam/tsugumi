@@ -52,6 +52,43 @@ enum SelfTest {
         return passed
     }
 
+    /// 文字起こし待ちの間に録音が消され、同じ名前のフォルダで次の録音が始まったとき、
+    /// 待ち行列に残った古い録音が、録音中のフォルダに手を出さないことを確かめる。
+    @MainActor
+    static func runQueueGuard(folder: URL) async throws -> Bool {
+        let base = folder.appendingPathComponent("selftest-queue")
+        try? FileManager.default.removeItem(at: base)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = SessionStore(baseFolder: base)
+
+        // 消された古い録音（待ち行列に残っている側）
+        var stale = try store.create(source: .recording, startedAt: Date().addingTimeInterval(-30))
+        stale.meta.status = .recorded
+        try FileManager.default.removeItem(at: stale.folder)
+
+        // 同じ名前のフォルダで録音中の、新しい録音
+        let live = Session(folder: stale.folder, meta: .init(startedAt: Date(), source: .recording, status: .recording))
+        try FileManager.default.createDirectory(at: live.folder, withIntermediateDirectories: true)
+        try live.save()
+        let tracks = [Recorder.systemFile, Recorder.micFile].map { live.folder.appendingPathComponent($0) }
+        for url in tracks {
+            let track = try TrackWriter(url: url)
+            try feed(track, sampleRate: 48_000, channels: 1, interleaved: false, seconds: 3, activeChannels: [0])
+            try track.wav.close()
+        }
+
+        let pipeline = Pipeline()
+        pipeline.enqueue(stale)
+        repeat { try await Task.sleep(for: .milliseconds(200)) } while pipeline.isBusy
+
+        let kept = tracks.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }
+        let status = Session.load(folder: live.folder)?.meta.status
+        let untouched = !FileManager.default.fileExists(atPath: live.transcriptURL.path)
+        let passed = kept && status == .recording && untouched
+        print("\(passed ? "OK  " : "NG  ") 録音中のフォルダを古い待ち行列から守る … 音声 \(kept ? "残っている" : "消えた"), 状態 \(status?.rawValue ?? "なし")")
+        return passed
+    }
+
     /// 440Hz・振幅 0.5 の音を、実際の録音と同じ細切れのバッファで流し込む。
     private static func feed(
         _ track: TrackWriter, sampleRate: Double, channels: Int, interleaved: Bool,

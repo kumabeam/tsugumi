@@ -27,6 +27,22 @@ final class Pipeline {
         if !running { Task { await drain() } }
     }
 
+    /// 一覧から消された録音を、待ち行列からも外す。
+    func discard(folder: URL) {
+        waiting.removeAll { $0.folder.path == folder.path }
+        onChange?()
+    }
+
+    /// 待ち行列に入れたときの録音が、いまもそのフォルダにあるか。
+    /// 待っている間に消され、同じ名前のフォルダで別の録音が始まっていることがある。
+    /// そのフォルダに手を出すと、録音中の音声を消してしまう。
+    private nonisolated static func isSameRecording(_ session: Session, allowing statuses: Set<Session.Status>) -> Bool {
+        guard let onDisk = Session.load(folder: session.folder) else { return false }
+        // 保存した日時は秒までなので、1秒未満の差は同じとみなす
+        return abs(onDisk.meta.startedAt.timeIntervalSince(session.meta.startedAt)) < 1
+            && statuses.contains(onDisk.meta.status)
+    }
+
     /// アプリ終了時に呼ぶ。途中の分は「文字起こし待ち」のまま残り、次回起動時に再開される。
     func cancelAll() {
         cancelled = true
@@ -38,6 +54,10 @@ final class Pipeline {
         running = true
         while !waiting.isEmpty {
             var session = waiting.removeFirst()
+            guard Self.isSameRecording(session, allowing: [.recorded]) else {
+                onChange?()
+                continue
+            }
             current = session
             progress = 0
             onChange?()
@@ -53,6 +73,8 @@ final class Pipeline {
                 session.meta.status = .failed
                 session.meta.error = error.localizedDescription
             }
+            // 文字起こしの間に付けられた名前を、古い内容で上書きしない
+            if let onDisk = Session.load(folder: session.folder) { session.meta.title = onDisk.meta.title }
             try? session.save()
             current = nil
             onChange?()
@@ -99,8 +121,9 @@ final class Pipeline {
         )
         try text.write(to: session.transcriptURL, atomically: true, encoding: .utf8)
 
+        let finished = session
         await Task.detached(priority: .utility) {
-            Self.archive(prepared, source: source, in: folder)
+            Self.archive(prepared, session: finished)
         }.value
     }
 
@@ -179,8 +202,12 @@ final class Pipeline {
     }
 
     /// 文字起こしが済んだら、録音は聞き返し用の m4a にして作業用の WAV を消す。
-    private nonisolated static func archive(_ prepared: Prepared, source: Session.Source, in folder: URL) {
+    private nonisolated static func archive(_ prepared: Prepared, session: Session) {
         let files = FileManager.default
+        let folder = session.folder
+        let source = session.meta.source
+        // 作業用の WAV を消す処理なので、別の録音のフォルダになっていたら何もしない
+        guard isSameRecording(session, allowing: [.recorded]) else { return }
         let workFiles = [Recorder.systemFile, Recorder.micFile, "stereo.wav", "mix.wav", "import.wav", whisperInput]
             .map { folder.appendingPathComponent($0) }
 
@@ -212,6 +239,7 @@ final class Pipeline {
             // 変換できなかったときは WAV を残す（音声を失わない）
             guard process.terminationStatus == 0, Wav.fileSize(audio) > 0 else { return }
         }
+        guard isSameRecording(session, allowing: [.recorded]) else { return }
         for file in workFiles { try? files.removeItem(at: file) }
     }
 }
