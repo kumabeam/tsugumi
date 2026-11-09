@@ -29,6 +29,7 @@ struct LibraryView: View {
 
 private struct Sidebar: View {
     @ObservedObject var model: LibraryModel
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,6 +61,14 @@ private struct Sidebar: View {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("タイトル、文字起こし", text: $model.search)
                 .textFieldStyle(.plain)
+                .focused($searchFocused)
+                .background {
+                    // ⌥⌘F で一覧の検索欄へ
+                    Button("") { searchFocused = true }
+                        .keyboardShortcut("f", modifiers: [.command, .option])
+                        .opacity(0)
+                        .accessibilityHidden(true)
+                }
             if !model.search.isEmpty {
                 Button {
                     model.search = ""
@@ -160,11 +169,27 @@ private struct Detail: View {
     @State private var title = ""
     @State private var copied = false
     @State private var confirmingDelete = false
+    /// 検索で今見ている一致（matches の何番目か）
+    @State private var matchPosition = 0
+    /// 検索で飛ぶ先の行
+    @State private var jumpTarget: Int?
     @FocusState private var titleFocused: Bool
+    @FocusState private var findFocused: Bool
+
+    /// 検索語を含む行
+    private var matches: [Int] {
+        let query = model.highlightQuery
+        guard !query.isEmpty else { return [] }
+        return model.lines.filter { TextSearch.contains($0.text, query) }.map(\.id)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            if model.isFinding, item.session.meta.status == .done {
+                Divider()
+                findBar
+            }
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -173,7 +198,16 @@ private struct Detail: View {
                 PlayerBar(player: player)
             }
         }
-        .onAppear { title = item.title }
+        .onAppear {
+            title = item.title
+            // 一覧の検索から来たときは、最初に見つかった行へ
+            jumpTarget = matches.first
+        }
+        .onChange(of: model.highlightQuery) { _, _ in
+            matchPosition = 0
+            jumpTarget = matches.first
+        }
+        .background { shortcuts }
         .onChange(of: titleFocused) { _, focused in
             if !focused { commitTitle() }
         }
@@ -187,6 +221,67 @@ private struct Detail: View {
 
     private func commitTitle() {
         model.rename(item, to: title)
+    }
+
+    // MARK: 文字起こしの中の検索
+
+    private func openFind() {
+        guard item.session.meta.status == .done else { return }
+        model.isFinding = true
+        findFocused = true
+    }
+
+    private func closeFind() {
+        model.isFinding = false
+        findFocused = false
+    }
+
+    /// 次（+1）／前（-1）の一致へ移る。端まで行ったら反対側に回る
+    private func step(_ direction: Int) {
+        let found = matches
+        guard !found.isEmpty else { return }
+        matchPosition = (matchPosition + direction + found.count) % found.count
+        jumpTarget = found[matchPosition]
+    }
+
+    private var findBar: some View {
+        let found = matches
+        return HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("文字起こしの中を検索", text: $model.findText)
+                .textFieldStyle(.plain)
+                .focused($findFocused)
+                .onSubmit {
+                    step(1)
+                    findFocused = true
+                }
+            if !model.highlightQuery.isEmpty {
+                Text(found.isEmpty ? "見つかりません" : "\(min(matchPosition, found.count - 1) + 1) / \(found.count) 行")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Button { step(-1) } label: { Image(systemName: "chevron.up") }
+                .help("前へ（⇧⌘G）")
+                .disabled(found.isEmpty)
+            Button { step(1) } label: { Image(systemName: "chevron.down") }
+                .help("次へ（⌘G）")
+                .disabled(found.isEmpty)
+            Button("完了") { closeFind() }
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+    }
+
+    /// 画面には出さない、キー操作だけのボタン
+    private var shortcuts: some View {
+        Group {
+            Button("") { openFind() }.keyboardShortcut("f", modifiers: .command)
+            Button("") { step(1) }.keyboardShortcut("g", modifiers: .command)
+            Button("") { step(-1) }.keyboardShortcut("g", modifiers: [.command, .shift])
+        }
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     private var header: some View {
@@ -251,7 +346,10 @@ private struct Detail: View {
             if model.lines.isEmpty {
                 Text("文字起こしに発言がありませんでした").foregroundStyle(.secondary)
             } else {
-                Transcript(lines: model.lines, player: player)
+                Transcript(
+                    lines: model.lines, player: player,
+                    query: model.highlightQuery, jumpTarget: jumpTarget
+                )
             }
         case .recording:
             VStack(spacing: 10) {
@@ -286,6 +384,10 @@ private struct Detail: View {
 private struct Transcript: View {
     let lines: [TranscriptLine]
     @ObservedObject var player: PlayerModel
+    /// 目立たせる検索語
+    var query = ""
+    /// 検索で今見ている行
+    var jumpTarget: Int?
 
     /// いま再生している位置の行
     private var currentID: Int? {
@@ -299,7 +401,7 @@ private struct Transcript: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(lines) { line in
-                        LineRow(line: line, isCurrent: line.id == current)
+                        LineRow(line: line, isCurrent: line.id == current, query: query, isJumpTarget: line.id == jumpTarget)
                             .id(line.id)
                             .onTapGesture { player.seek(to: line.start, play: true) }
                     }
@@ -312,6 +414,10 @@ private struct Transcript: View {
                 guard let new, player.isPlaying else { return }
                 withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(new, anchor: .center) }
             }
+            .onChange(of: jumpTarget, initial: true) { _, new in
+                guard let new else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(new, anchor: .center) }
+            }
         }
     }
 }
@@ -319,6 +425,9 @@ private struct Transcript: View {
 private struct LineRow: View {
     let line: TranscriptLine
     let isCurrent: Bool
+    var query = ""
+    /// 検索で今見ている行か
+    var isJumpTarget = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -332,12 +441,17 @@ private struct LineRow: View {
                     .padding(.vertical, 2)
                     .background(labelColor(label).opacity(0.18), in: Capsule())
             }
-            Text(line.text)
+            Text(TextSearch.highlighted(line.text, query))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(isCurrent ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            if isJumpTarget {
+                RoundedRectangle(cornerRadius: 6).strokeBorder(Color.orange, lineWidth: 2)
+            }
+        }
         .contentShape(Rectangle())
         .help("クリックでここから再生")
     }
@@ -425,6 +539,31 @@ private extension PlayerBar {
         .fixedSize()
         .foregroundStyle(.primary)
         .help("再生速度")
+    }
+}
+
+/// 文字起こしの中の語探し。大文字小文字と全角半角の違いは無視する。
+enum TextSearch {
+    private static let options: String.CompareOptions = [.caseInsensitive, .widthInsensitive]
+
+    static func contains(_ text: String, _ query: String) -> Bool {
+        text.range(of: query, options: options) != nil
+    }
+
+    /// 一致した部分に色を付けた文字列を返す。
+    static func highlighted(_ text: String, _ query: String) -> AttributedString {
+        var result = AttributedString(text)
+        guard !query.isEmpty else { return result }
+        var start = text.startIndex
+        while start < text.endIndex, let range = text.range(of: query, options: options, range: start..<text.endIndex) {
+            if let lower = AttributedString.Index(range.lowerBound, within: result),
+               let upper = AttributedString.Index(range.upperBound, within: result) {
+                result[lower..<upper].backgroundColor = .yellow
+                result[lower..<upper].foregroundColor = .black
+            }
+            start = range.upperBound
+        }
+        return result
     }
 }
 

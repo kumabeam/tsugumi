@@ -23,6 +23,10 @@ enum Snapshot {
         model.reload()
         if model.items.indices.contains(index) { model.selection = model.items[index].id }
         if arguments.contains("--recording") { model.setRecording(since: Date().addingTimeInterval(-754)) }
+        if let flag = arguments.firstIndex(of: "--find"), arguments.indices.contains(flag + 1) {
+            model.isFinding = true
+            model.findText = arguments[flag + 1]
+        }
         if let waiting = model.items.first(where: { $0.session.meta.status == .recorded }) {
             model.setTranscribing(id: waiting.id, progress: 42)
         }

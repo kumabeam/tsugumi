@@ -45,6 +45,9 @@ final class LibraryModel: ObservableObject {
         didSet { if selection != oldValue { loadSelection() } }
     }
     @Published var search = ""
+    /// 文字起こしの中の検索（⌘F）
+    @Published var isFinding = false
+    @Published var findText = ""
     /// 選んでいる録音の文字起こし
     @Published private(set) var lines: [TranscriptLine] = []
     @Published private(set) var recordingSince: Date?
@@ -60,6 +63,12 @@ final class LibraryModel: ObservableObject {
 
     init(store: SessionStore) {
         self.store = store
+    }
+
+    /// 文字起こしの中で目立たせる語。⌘F の検索語が優先、無ければ一覧の検索語
+    var highlightQuery: String {
+        let find = isFinding ? findText.trimmingCharacters(in: .whitespaces) : ""
+        return find.isEmpty ? search.trimmingCharacters(in: .whitespaces) : find
     }
 
     var selectedItem: Item? {
