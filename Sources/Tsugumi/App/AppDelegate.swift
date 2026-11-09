@@ -58,6 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             importFiles: { [weak self] urls in self?.importFiles(urls) }
         )
         NSApp.mainMenu = Self.makeMainMenu()
+        // Dock と ⌘Tab に出るアイコンを明示する。起動後に「普通のアプリ」へ切り替える作りだと、
+        // macOS が古い（アイコン無しの頃の）絵を使い続けることがあるため
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: url) {
+            NSApp.applicationIconImage = icon
+        }
         notifier.setUp()
 
         // ⌃⌥⌘R で録音の開始／停止
