@@ -27,7 +27,7 @@ enum AudioImporter {
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: [
             AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: Wav.sampleRate,
+            AVSampleRateKey: Wav.whisperRate,
             AVNumberOfChannelsKey: 1,
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false,
@@ -39,7 +39,7 @@ enum AudioImporter {
             throw reader.error ?? TsugumiError.message("ファイルを読めません: \(source.lastPathComponent)")
         }
 
-        let writer = try WavWriter(url: destination)
+        let writer = try WavWriter(url: destination, sampleRate: Wav.whisperRate)
         while let sampleBuffer = output.copyNextSampleBuffer() {
             guard let block = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
             let length = CMBlockBufferGetDataLength(block)
@@ -71,7 +71,7 @@ enum AudioImporter {
         process.executableURL = ffmpeg
         process.arguments = [
             "-y", "-loglevel", "error", "-i", source.path,
-            "-vn", "-ac", "1", "-ar", String(Wav.sampleRate), "-c:a", "pcm_s16le", destination.path,
+            "-vn", "-ac", "1", "-ar", String(Wav.whisperRate), "-c:a", "pcm_s16le", destination.path,
         ]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

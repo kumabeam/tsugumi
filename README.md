@@ -64,10 +64,11 @@ tccutil reset Microphone io.github.kumabeam.tsugumi
 ```
 2026-11-09_1430/
 ├── transcript.md   文字起こし（時刻と「相手／自分」付き）
-├── audio.m4a       録音（聞き返し用。相手と自分の声を1本に混ぜてある）
+├── audio.m4a       録音（聞き返し用。相手と自分の声を1本に混ぜてある。48kHz、1時間で約35MB）
 └── session.json    状態の記録
 ```
 
+- 録音は 48kHz で保存し、whisper に渡すときだけ 16kHz に落とす（whisper の決まり）。録音中の作業ファイルは1時間で約700MB になり、文字起こしが済むと消える
 - 「相手／自分」は、Mac から出た音とマイクのどちらが大きいかで決めている。対面の打ち合わせを Mac のマイクだけで録った場合や、取り込んだファイルには付かない
 - スピーカーで聞きながら録ると相手の声がマイクにも入るが、判定は音量の大きい側になる
 
@@ -82,7 +83,7 @@ ScreenCaptureKit ─┬─ Mac から出た音 ─→ system.wav ─┐
 | 場所 | 役割 |
 |---|---|
 | `Audio/Recorder.swift` | ScreenCaptureKit で2トラックを受け取る |
-| `Audio/TrackWriter.swift` | 16kHz モノラルに変換し、2トラックの時間軸を揃える |
+| `Audio/TrackWriter.swift` | 48kHz モノラルに変換し、2トラックの時間軸を揃える |
 | `Audio/Wav.swift` | 落ちても読める WAV の書き込み、ヘッダー修復、ステレオ結合 |
 | `Audio/AudioImporter.swift` | 外部ファイルを WAV に変換 |
 | `Audio/Microphones.swift` | マイクの一覧と、選んだマイクの記憶 |

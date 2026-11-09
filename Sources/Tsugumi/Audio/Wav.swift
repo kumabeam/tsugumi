@@ -10,13 +10,16 @@ enum TsugumiError: LocalizedError {
     }
 }
 
-/// 16kHz・16bit の WAV を扱う小道具。whisper がそのまま読める形式に揃えている。
+/// 16bit の WAV を扱う小道具。
 enum Wav {
-    static let sampleRate = 16_000
+    /// 録音して保存するときの周波数。聞き返したときに声がこもらない高さまで残す
+    static let recordingRate = 48_000
+    /// whisper に渡すときの周波数（whisper の決まり）
+    static let whisperRate = 16_000
     static let headerSize = 44
     private static let chunkBytes = 1 << 20
 
-    static func header(channels: Int, dataBytes: Int) -> Data {
+    static func header(channels: Int, sampleRate: Int, dataBytes: Int) -> Data {
         var data = Data(capacity: headerSize)
         func text(_ value: String) { data.append(contentsOf: Array(value.utf8)) }
         func u32(_ value: Int) {
@@ -53,8 +56,29 @@ enum Wav {
         let dataBytes = (size - headerSize) / 2 * 2
         let handle = try FileHandle(forUpdating: url)
         defer { try? handle.close() }
-        try handle.seek(toOffset: 0)
-        try handle.write(contentsOf: header(channels: 1, dataBytes: dataBytes))
+        // 長さを書いてある2か所だけを直す（周波数などはそのまま）
+        func write(_ value: Int, at offset: UInt64) throws {
+            var raw = UInt32(clamping: value).littleEndian
+            try handle.seek(toOffset: offset)
+            try handle.write(contentsOf: withUnsafeBytes(of: &raw) { Data($0) })
+        }
+        try write(36 + dataBytes, at: 4)
+        try write(dataBytes, at: 40)
+    }
+
+    /// whisper に渡せる 16kHz の WAV を作る（チャンネル数はそのまま）。
+    static func downsampleForWhisper(_ input: URL, to output: URL) throws {
+        try? FileManager.default.removeItem(at: output)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        process.arguments = ["-f", "WAVE", "-d", "LEI16@\(whisperRate)", input.path, output.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, fileSize(output) > headerSize else {
+            throw TsugumiError.message("文字起こし用の音声を作れませんでした")
+        }
     }
 
     /// 最大振幅（0〜32768）。無音トラックの判定に使う。
@@ -78,7 +102,9 @@ enum Wav {
     /// 短い方は無音として扱う。
     static func mix(_ first: URL, _ second: URL, to output: URL) throws {
         let frames = max(monoFrames(first), monoFrames(second))
-        FileManager.default.createFile(atPath: output.path, contents: header(channels: 1, dataBytes: frames * 2))
+        FileManager.default.createFile(
+            atPath: output.path, contents: header(channels: 1, sampleRate: recordingRate, dataBytes: frames * 2)
+        )
         let out = try FileHandle(forWritingTo: output)
         defer { try? out.close() }
         try out.seekToEnd()
@@ -113,7 +139,9 @@ enum Wav {
     /// 短い方は無音で埋める。
     static func interleave(left: URL, right: URL, to output: URL) throws {
         let frames = max(monoFrames(left), monoFrames(right))
-        FileManager.default.createFile(atPath: output.path, contents: header(channels: 2, dataBytes: frames * 4))
+        FileManager.default.createFile(
+            atPath: output.path, contents: header(channels: 2, sampleRate: recordingRate, dataBytes: frames * 4)
+        )
         let out = try FileHandle(forWritingTo: output)
         defer { try? out.close() }
         try out.seekToEnd()
@@ -152,11 +180,15 @@ final class WavWriter {
     private let handle: FileHandle
     private(set) var frames = 0
     private var framesAtLastPatch = 0
-    private let patchInterval = Wav.sampleRate * 5
+    private let sampleRate: Int
+    private let patchInterval: Int
 
-    init(url: URL) throws {
+    init(url: URL, sampleRate: Int) throws {
         self.url = url
-        guard FileManager.default.createFile(atPath: url.path, contents: Wav.header(channels: 1, dataBytes: 0)) else {
+        self.sampleRate = sampleRate
+        patchInterval = sampleRate * 5
+        let header = Wav.header(channels: 1, sampleRate: sampleRate, dataBytes: 0)
+        guard FileManager.default.createFile(atPath: url.path, contents: header) else {
             throw TsugumiError.message("ファイルを作成できません: \(url.path)")
         }
         handle = try FileHandle(forUpdating: url)
@@ -197,7 +229,7 @@ final class WavWriter {
 
     private func patchHeader() throws {
         try handle.seek(toOffset: 0)
-        try handle.write(contentsOf: Wav.header(channels: 1, dataBytes: frames * 2))
+        try handle.write(contentsOf: Wav.header(channels: 1, sampleRate: sampleRate, dataBytes: frames * 2))
         try handle.seekToEnd()
         framesAtLastPatch = frames
     }

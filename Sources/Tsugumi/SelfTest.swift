@@ -1,7 +1,7 @@
 import AVFoundation
 import CoreMedia
 
-/// 録音の後半（受け取った音を 16kHz モノラルに直し、時間軸に並べて書く部分）を、
+/// 録音の後半（受け取った音を 48kHz モノラルに直し、時間軸に並べて書く部分）を、
 /// 合成した音で確かめる。実際の録音は画面収録の許可が要るので、許可なしで回せる検査として置いている。
 enum SelfTest {
     static func run(folder: URL) throws -> Bool {
@@ -19,7 +19,7 @@ enum SelfTest {
             let track = try TrackWriter(url: url)
             try feed(track, sampleRate: 48_000, channels: 2, interleaved: false, seconds: 3, activeChannels: [0, 1])
             try track.wav.close()
-            let seconds = Double(Wav.monoFrames(url)) / Double(Wav.sampleRate)
+            let seconds = Double(Wav.monoFrames(url)) / Double(Wav.recordingRate)
             let peak = try Wav.peak(url)
             check("48kHz ステレオ", abs(seconds - 3) < 0.05 && abs(peak - 16_384) < 1_000, "長さ \(seconds)秒, 最大振幅 \(peak)")
         }
@@ -30,7 +30,7 @@ enum SelfTest {
             let track = try TrackWriter(url: url)
             try feed(track, sampleRate: 44_100, channels: 3, interleaved: true, seconds: 3, activeChannels: [0])
             try track.wav.close()
-            let seconds = Double(Wav.monoFrames(url)) / Double(Wav.sampleRate)
+            let seconds = Double(Wav.monoFrames(url)) / Double(Wav.recordingRate)
             let peak = try Wav.peak(url)
             check("44.1kHz 3チャンネル", abs(seconds - 3) < 0.05 && abs(peak - 16_384 / 3) < 500, "長さ \(seconds)秒, 最大振幅 \(peak)")
         }
@@ -42,7 +42,7 @@ enum SelfTest {
             try feed(track, sampleRate: 48_000, channels: 1, interleaved: false, seconds: 1, activeChannels: [0])
             try feed(track, sampleRate: 48_000, channels: 1, interleaved: false, seconds: 1, activeChannels: [0], startAt: 2)
             try track.wav.close()
-            let seconds = Double(Wav.monoFrames(url)) / Double(Wav.sampleRate)
+            let seconds = Double(Wav.monoFrames(url)) / Double(Wav.recordingRate)
             check("音の欠落を無音で補う", abs(seconds - 3) < 0.05, "長さ \(seconds)秒（期待 3秒）")
         }
 

@@ -2,17 +2,17 @@ import AVFoundation
 import CoreMedia
 
 /// 1トラック分（Mac から出た音、またはマイク）を受け取り、
-/// 16kHz モノラルに直して WAV に書く。
+/// 48kHz モノラルに直して WAV に書く。
 final class TrackWriter {
     let wav: WavWriter
     private var converter: AVAudioConverter?
     private var sourceFormat: AVAudioFormat?
     /// このトラックの時刻のずれ補正（秒）。最初のバッファで決める。
     private var bias: Double?
-    private let gapTolerance = Wav.sampleRate / 10
+    private let gapTolerance = Wav.recordingRate / 10
 
     init(url: URL) throws {
-        wav = try WavWriter(url: url)
+        wav = try WavWriter(url: url, sampleRate: Wav.recordingRate)
     }
 
     /// - Parameters:
@@ -29,7 +29,7 @@ final class TrackWriter {
             }
             offset += bias ?? 0
             // 音が届かなかった区間は無音で埋めて、時間軸を保つ
-            let expected = Int((offset * Double(Wav.sampleRate)).rounded())
+            let expected = Int((offset * Double(Wav.recordingRate)).rounded())
             let gap = expected - wav.frames
             if gap > gapTolerance { try wav.appendSilence(frames: gap) }
         }
@@ -49,7 +49,7 @@ final class TrackWriter {
             throw TsugumiError.message("音声形式を変換できません: \(input.format)")
         }
         let sourceRate = input.format.sampleRate
-        let resampled = sourceRate == Double(Wav.sampleRate) ? mono : try resample(mono, from: sourceRate)
+        let resampled = sourceRate == Double(Wav.recordingRate) ? mono : try resample(mono, from: sourceRate)
         return resampled.map { Int16(max(-1, min(1, $0)) * 32767) }
     }
 
@@ -86,12 +86,12 @@ final class TrackWriter {
         return mono
     }
 
-    /// モノラルの音を 16kHz に変換する。変換器は使い回す（つなぎ目で音が途切れないように）。
+    /// モノラルの音を録音用の周波数に変換する。変換器は使い回す（つなぎ目で音が途切れないように）。
     private func resample(_ samples: [Float], from sourceRate: Double) throws -> [Float] {
         if converter == nil || sourceFormat?.sampleRate != sourceRate {
             // 途中でマイクが切り替わると周波数が変わるので、その都度作り直す
             guard let inputFormat = AVAudioFormat(standardFormatWithSampleRate: sourceRate, channels: 1),
-                  let outputFormat = AVAudioFormat(standardFormatWithSampleRate: Double(Wav.sampleRate), channels: 1),
+                  let outputFormat = AVAudioFormat(standardFormatWithSampleRate: Double(Wav.recordingRate), channels: 1),
                   let created = AVAudioConverter(from: inputFormat, to: outputFormat) else {
                 throw TsugumiError.message("サンプリング周波数を変換できません: \(sourceRate)Hz")
             }
@@ -108,7 +108,7 @@ final class TrackWriter {
             inputData[0].update(from: source.baseAddress!, count: samples.count)
         }
 
-        let ratio = Double(Wav.sampleRate) / sourceRate
+        let ratio = Double(Wav.recordingRate) / sourceRate
         let capacity = AVAudioFrameCount((Double(samples.count) * ratio).rounded(.up)) + 256
         guard let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else {
             throw TsugumiError.message("音声バッファを確保できません")

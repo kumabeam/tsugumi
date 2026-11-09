@@ -76,7 +76,7 @@ final class Pipeline {
             }
         }.value
 
-        let duration = Double(prepared.frames) / Double(Wav.sampleRate)
+        let duration = prepared.duration
         guard duration >= 1 else {
             throw TsugumiError.message("録音が短すぎます（1秒未満）")
         }
@@ -107,21 +107,30 @@ final class Pipeline {
     // MARK: - 音声の準備
 
     private struct Prepared: Sendable {
+        /// whisper に渡す 16kHz の音声
         var wav: URL
         var diarize: Bool
-        var frames: Int
+        var duration: Double
         var sourceNote: String
+        /// 録音したトラックのうち、音が入っていたもの（聞き返し用の音声の材料）
+        var tracks: [URL] = []
     }
+
+    private nonisolated static let whisperInput = "whisper-input.wav"
 
     private nonisolated static func prepareRecording(in folder: URL) throws -> Prepared {
         let files = FileManager.default
         let system = folder.appendingPathComponent(Recorder.systemFile)
         let mic = folder.appendingPathComponent(Recorder.micFile)
+        let whisper = folder.appendingPathComponent(whisperInput)
 
         func isActive(_ url: URL) throws -> Bool {
             guard files.fileExists(atPath: url.path) else { return false }
             try Wav.repairMonoHeader(url)
             return try Wav.peak(url) >= silencePeak
+        }
+        func seconds(_ url: URL) -> Double {
+            Double(Wav.monoFrames(url)) / Double(Wav.recordingRate)
         }
         let systemActive = try isActive(system)
         let micActive = try isActive(mic)
@@ -131,15 +140,24 @@ final class Pipeline {
             // 左 = Mac から出た音（相手）、右 = マイク（自分）のステレオにして、話者を区別させる
             let stereo = folder.appendingPathComponent("stereo.wav")
             try Wav.interleave(left: system, right: mic, to: stereo)
+            try Wav.downsampleForWhisper(stereo, to: whisper)
+            try? files.removeItem(at: stereo)
             return Prepared(
-                wav: stereo, diarize: true,
-                frames: max(Wav.monoFrames(system), Wav.monoFrames(mic)),
-                sourceNote: "Mac で録音（相手 = Mac から出た音／自分 = マイク）"
+                wav: whisper, diarize: true, duration: max(seconds(system), seconds(mic)),
+                sourceNote: "Mac で録音（相手 = Mac から出た音／自分 = マイク）", tracks: [system, mic]
             )
         case (false, true):
-            return Prepared(wav: mic, diarize: false, frames: Wav.monoFrames(mic), sourceNote: "Mac で録音（マイクのみ）")
+            try Wav.downsampleForWhisper(mic, to: whisper)
+            return Prepared(
+                wav: whisper, diarize: false, duration: seconds(mic),
+                sourceNote: "Mac で録音（マイクのみ）", tracks: [mic]
+            )
         case (true, false):
-            return Prepared(wav: system, diarize: false, frames: Wav.monoFrames(system), sourceNote: "Mac で録音（Mac から出た音のみ。マイクは無音）")
+            try Wav.downsampleForWhisper(system, to: whisper)
+            return Prepared(
+                wav: whisper, diarize: false, duration: seconds(system),
+                sourceNote: "Mac で録音（Mac から出た音のみ。マイクは無音）", tracks: [system]
+            )
         case (false, false):
             throw TsugumiError.message("音が録れていませんでした")
         }
@@ -154,27 +172,25 @@ final class Pipeline {
         let wav = folder.appendingPathComponent("import.wav")
         try? FileManager.default.removeItem(at: wav)
         try await AudioImporter.convert(source, to: wav)
-        return Prepared(wav: wav, diarize: false, frames: Wav.monoFrames(wav), sourceNote: "ファイル取り込み（\(source.lastPathComponent)）")
+        return Prepared(
+            wav: wav, diarize: false, duration: Double(Wav.monoFrames(wav)) / Double(Wav.whisperRate),
+            sourceNote: "ファイル取り込み（\(source.lastPathComponent)）"
+        )
     }
 
-    /// 文字起こしが済んだら、録音は小さい m4a にして作業用の WAV を消す。
+    /// 文字起こしが済んだら、録音は聞き返し用の m4a にして作業用の WAV を消す。
     private nonisolated static func archive(_ prepared: Prepared, source: Session.Source, in folder: URL) {
         let files = FileManager.default
-        let workFiles = [Recorder.systemFile, Recorder.micFile, "stereo.wav", "mix.wav", "import.wav"]
+        let workFiles = [Recorder.systemFile, Recorder.micFile, "stereo.wav", "mix.wav", "import.wav", whisperInput]
             .map { folder.appendingPathComponent($0) }
 
         if source == .recording {
-            // 保存するのは聞き返し用。左右に分けた音は話者の判定にしか使わないので、
             // 相手と自分を混ぜて、両耳から普通に聞こえる1本にする
-            var listening = prepared.wav
-            if prepared.diarize {
+            guard var listening = prepared.tracks.first else { return }
+            if prepared.tracks.count == 2 {
                 let mix = folder.appendingPathComponent("mix.wav")
                 do {
-                    try Wav.mix(
-                        folder.appendingPathComponent(Recorder.systemFile),
-                        folder.appendingPathComponent(Recorder.micFile),
-                        to: mix
-                    )
+                    try Wav.mix(prepared.tracks[0], prepared.tracks[1], to: mix)
                     listening = mix
                 } catch {
                     return
@@ -184,7 +200,7 @@ final class Pipeline {
             let audio = folder.appendingPathComponent(Session.audioFile)
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-            process.arguments = ["-f", "m4af", "-d", "aac", listening.path, audio.path]
+            process.arguments = ["-f", "m4af", "-d", "aac", "-b", "80000", listening.path, audio.path]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             do {
