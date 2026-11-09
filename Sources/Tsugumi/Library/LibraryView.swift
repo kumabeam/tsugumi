@@ -382,6 +382,9 @@ private struct PlayerBar: View {
                 .font(.title2)
                 .foregroundStyle(.primary)
             }
+            .overlay(alignment: .trailing) {
+                speedMenu.padding(.trailing, 52)
+            }
             .padding(.bottom, 4)
         }
         .padding(.horizontal, 20)
@@ -396,6 +399,32 @@ private struct PlayerBar: View {
                     .padding(.top, 2)
             }
         }
+    }
+}
+
+private extension PlayerBar {
+    /// 再生速度の切り替え
+    var speedMenu: some View {
+        Menu {
+            ForEach(PlayerModel.rates, id: \.self) { rate in
+                Button {
+                    player.setRate(rate)
+                } label: {
+                    if rate == player.rate {
+                        Label(PlayerModel.label(for: rate), systemImage: "checkmark")
+                    } else {
+                        Text(PlayerModel.label(for: rate))
+                    }
+                }
+            }
+        } label: {
+            Text(PlayerModel.label(for: player.rate))
+                .font(.callout.monospacedDigit())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .foregroundStyle(.primary)
+        .help("再生速度")
     }
 }
 

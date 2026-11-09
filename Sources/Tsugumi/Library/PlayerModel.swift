@@ -11,6 +11,14 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var isAvailable = false
     /// 一度でも再生や頭出しをしたか（していない間は、どの行も「再生中」として光らせない）
     @Published private(set) var hasStarted = false
+    /// 再生速度（1 = 等倍）。選んだ速度は次回も使う
+    @Published private(set) var rate: Float = {
+        let stored = UserDefaults.standard.float(forKey: PlayerModel.rateKey)
+        return PlayerModel.rates.contains(stored) ? stored : 1
+    }()
+
+    static let rates: [Float] = [0.75, 1, 1.25, 1.5, 2]
+    private static let rateKey = "playbackRate"
 
     private var player: AVPlayer?
     private var timeObserver: Any?
@@ -21,6 +29,9 @@ final class PlayerModel: ObservableObject {
         guard let url else { return }
 
         let player = AVPlayer(url: url)
+        // 速度を変えても声の高さが変わらないようにする
+        player.currentItem?.audioTimePitchAlgorithm = .timeDomain
+        player.defaultRate = rate
         self.player = player
         isAvailable = true
 
@@ -90,5 +101,17 @@ final class PlayerModel: ObservableObject {
 
     func skip(by seconds: Double) {
         seek(to: currentTime + seconds)
+    }
+
+    func setRate(_ new: Float) {
+        rate = new
+        UserDefaults.standard.set(new, forKey: Self.rateKey)
+        // defaultRate は次に再生を始めるときの速度。再生中ならその場で切り替える
+        player?.defaultRate = new
+        if isPlaying { player?.rate = new }
+    }
+
+    static func label(for rate: Float) -> String {
+        String(format: "%g×", rate)
     }
 }
