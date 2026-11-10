@@ -23,6 +23,9 @@ enum Snapshot {
         model.reload()
         if model.items.indices.contains(index) { model.selection = model.items[index].id }
         if arguments.contains("--recording") { model.setRecording(since: Date().addingTimeInterval(-754)) }
+        if arguments.contains("--model") {
+            model.setModelStatus("文字起こしモデルを準備中 42%（1.3 GB / 3.1 GB）", failed: false)
+        }
         if let flag = arguments.firstIndex(of: "--find"), arguments.indices.contains(flag + 1) {
             model.isFinding = true
             model.findText = arguments[flag + 1]

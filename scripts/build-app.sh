@@ -14,12 +14,21 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp Resources/ggml-silero-v5.1.2.bin "$APP/Contents/Resources/"
 
+# 同梱する whisper-cli（scripts/build-whisper.sh で作る）。無いと、使う人の Mac に Homebrew の whisper-cpp が要る
+if [[ -x build/whisper/whisper-cli ]]; then
+    cp build/whisper/whisper-cli "$APP/Contents/MacOS/whisper-cli"
+else
+    echo "注意: build/whisper/whisper-cli がありません。配布用には先に scripts/build-whisper.sh を実行してください" >&2
+fi
+
 IDENTITY="${TSUGUMI_SIGN_IDENTITY:-Tsugumi Self-Signed}"
 if security find-identity -p codesigning 2>/dev/null | grep -q "\"$IDENTITY\""; then
     # 決まった証明書で署名する。ビルドし直しても macOS から同じアプリとして扱われ、
     # 画面収録とマイクの許可が引き継がれる（証明書は scripts/make-signing-cert.sh で作る）
+    [[ -x "$APP/Contents/MacOS/whisper-cli" ]] && codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/whisper-cli"
     codesign --force --sign "$IDENTITY" --identifier io.github.kumabeam.tsugumi "$APP"
 else
+    [[ -x "$APP/Contents/MacOS/whisper-cli" ]] && codesign --force --sign - "$APP/Contents/MacOS/whisper-cli"
     # 証明書が無いときは簡易署名。ビルドのたびに別のアプリに見えるので、許可はやり直しになる
     codesign --force --sign - --identifier io.github.kumabeam.tsugumi "$APP"
     # 前のビルドに出した許可は効かなくなっているので消しておく（残すと「許可済みなのに録れない」状態になる）

@@ -19,29 +19,27 @@ struct WhisperTools {
     static let vadModelFile = "ggml-silero-v5.1.2.bin"
 
     static let cliKey = "whisperCLI"
-    static let modelKey = "whisperModel"
+
+    /// 文字起こしに必要なものが揃っているか（モデルのダウンロード待ちなら false）
+    static var isReady: Bool { (try? locate()) != nil }
 
     static func locate() throws -> WhisperTools {
         let files = FileManager.default
         let home = files.homeDirectoryForCurrentUser.path
-        let defaults = UserDefaults.standard
 
+        // アプリに同梱した whisper-cli を使う。無い（開発中の素の実行ファイルなど）ときだけ Homebrew のものを探す
         let cliCandidates = [
-            defaults.string(forKey: cliKey),
+            Bundle.main.url(forAuxiliaryExecutable: "whisper-cli")?.path,
+            UserDefaults.standard.string(forKey: cliKey),
             "/opt/homebrew/bin/whisper-cli",
             "/usr/local/bin/whisper-cli",
         ].compactMap { $0 }
         guard let cli = cliCandidates.first(where: { files.isExecutableFile(atPath: $0) }) else {
-            throw TsugumiError.message("whisper-cli が見つかりません。ターミナルで brew install whisper-cpp を実行してください。")
+            throw TsugumiError.message("whisper-cli が見つかりません。アプリに同梱されているはずのものが欠けています。")
         }
 
-        let modelCandidates = [
-            defaults.string(forKey: modelKey),
-            "\(home)/.cache/whisper/ggml-large-v3.bin",
-            "\(home)/.cache/whisper/ggml-large-v3-turbo.bin",
-        ].compactMap { $0 }
-        guard let model = modelCandidates.first(where: { files.fileExists(atPath: $0) }) else {
-            throw TsugumiError.message("文字起こしモデルが見つかりません。~/.cache/whisper/ggml-large-v3.bin に置いてください。")
+        guard let model = ModelStore.locate() else {
+            throw TsugumiError.message("文字起こしモデルがまだありません（初回はダウンロードに数分かかります）")
         }
         let vadCandidates = [
             Bundle.main.url(forResource: vadModelFile, withExtension: nil)?.path,
@@ -49,7 +47,7 @@ struct WhisperTools {
         ].compactMap { $0 }
         let vad = vadCandidates.first(where: { files.fileExists(atPath: $0) })
         return WhisperTools(
-            cli: URL(fileURLWithPath: cli), model: URL(fileURLWithPath: model),
+            cli: URL(fileURLWithPath: cli), model: model,
             vadModel: vad.map { URL(fileURLWithPath: $0) }
         )
     }

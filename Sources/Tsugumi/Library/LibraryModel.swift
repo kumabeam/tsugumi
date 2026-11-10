@@ -40,6 +40,7 @@ final class LibraryModel: ObservableObject {
         var importFiles: ([URL]) -> Void = { _ in }
         /// 録音をゴミ箱に入れる直前（文字起こし待ちから外すため）
         var willDelete: (Session) -> Void = { _ in }
+        var retryModelDownload: () -> Void = {}
     }
 
     @Published private(set) var items: [Item] = []
@@ -55,6 +56,9 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var recordingSince: Date?
     @Published private(set) var transcribingID: String?
     @Published private(set) var progress = 0
+    /// 文字起こしモデルの準備状況。揃っていれば nil
+    @Published private(set) var modelStatus: String?
+    @Published private(set) var modelFailed = false
 
     let player = PlayerModel()
     var actions = Actions()
@@ -122,6 +126,11 @@ final class LibraryModel: ObservableObject {
 
     func setRecording(since: Date?) {
         if recordingSince != since { recordingSince = since }
+    }
+
+    func setModelStatus(_ text: String?, failed: Bool) {
+        if modelStatus != text { modelStatus = text }
+        if modelFailed != failed { modelFailed = failed }
     }
 
     func setTranscribing(id: String?, progress: Int) {

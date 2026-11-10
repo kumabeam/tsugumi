@@ -6,9 +6,10 @@ import Foundation
 ///     Tsugumi record <秒数> <出力フォルダ>
 ///     Tsugumi resume <出力フォルダ>   … 途中で終わった録音を拾って文字起こしする
 ///     Tsugumi selftest <出力フォルダ> … 合成した音で、変換と時間合わせを確かめる
+///     Tsugumi fetch-model <保存フォルダ> … モデルのダウンロードを試す（約3GB）
 @MainActor
 enum CommandLineMode {
-    static let commands: Set<String> = ["transcribe", "record", "resume", "selftest"]
+    static let commands: Set<String> = ["transcribe", "record", "resume", "selftest", "fetch-model"]
 
     static func run(_ arguments: [String]) -> Never {
         Task { @MainActor in
@@ -18,6 +19,9 @@ enum CommandLineMode {
                     let audio = try SelfTest.run(folder: folder)
                     let queue = try await SelfTest.runQueueGuard(folder: folder)
                     exit(audio && queue ? 0 : 1)
+                }
+                if arguments[0] == "fetch-model", arguments.count == 2 {
+                    exit(await fetchModel(into: URL(fileURLWithPath: arguments[1])) ? 0 : 1)
                 }
                 guard arguments.count == (arguments[0] == "resume" ? 2 : 3), let folder = arguments.last else {
                     throw TsugumiError.message("使い方: Tsugumi transcribe <ファイル> <出力フォルダ> / record <秒数> <出力フォルダ> / resume <出力フォルダ>")
@@ -68,6 +72,32 @@ enum CommandLineMode {
         session.meta.status = .recorded
         try session.save()
         return session
+    }
+
+    /// 初回起動と同じダウンロードを、指定フォルダに対して行う。
+    private static func fetchModel(into folder: URL) async -> Bool {
+        let store = ModelStore(folder: folder)
+        var lastPrinted = -1
+        return await withCheckedContinuation { continuation in
+            store.onChange = {
+                switch store.state {
+                case .downloading(let received, let total):
+                    let percent = total > 0 ? Int(Double(received) / Double(total) * 100) : 0
+                    if percent / 5 != lastPrinted / 5 {
+                        lastPrinted = percent
+                        print("\(percent)%  \(received) / \(total)")
+                    }
+                case .ready(let url):
+                    print("完了: \(url.path)")
+                    continuation.resume(returning: true)
+                case .failed(let reason):
+                    print("失敗: \(reason)")
+                    continuation.resume(returning: false)
+                }
+            }
+            // 保存先に置いてあるものではなく、必ずダウンロードを試す
+            store.forceDownloadForTesting()
+        }
     }
 
     private static func transcribe(_ session: Session) async throws -> Session {

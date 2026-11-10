@@ -24,8 +24,16 @@ final class Pipeline {
     func enqueue(_ session: Session) {
         waiting.append(session)
         onChange?()
-        if !running { Task { await drain() } }
+        kick()
     }
+
+    /// 止まっていた処理を動かす（モデルのダウンロードが終わったときなど）。
+    func kick() {
+        if !running, !waiting.isEmpty { Task { await drain() } }
+    }
+
+    /// 文字起こしの準備（モデル）ができておらず、待っている状態か
+    var isWaitingForModel: Bool { !waiting.isEmpty && !running && !WhisperTools.isReady }
 
     /// 一覧から消された録音を、待ち行列からも外す。
     func discard(folder: URL) {
@@ -53,6 +61,8 @@ final class Pipeline {
     private func drain() async {
         running = true
         while !waiting.isEmpty {
+            // モデルがまだ無ければ、ここで止まる。揃ったら kick() で再開する
+            guard WhisperTools.isReady else { break }
             var session = waiting.removeFirst()
             guard Self.isSameRecording(session, allowing: [.recorded]) else {
                 onChange?()

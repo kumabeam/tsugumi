@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private let store = SessionStore()
     private let pipeline = Pipeline()
     private let notifier = Notifier()
+    private let models = ModelStore()
     private let micMonitor = MicActivityMonitor()
     private lazy var library = LibraryModel(store: store)
     private var libraryWindow: NSWindow?
@@ -74,14 +75,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         micMonitor.onChange = { [weak self] inUse in self?.micActivityChanged(inUse) }
         micMonitor.start()
 
+        models.onChange = { [weak self] in self?.modelStateChanged() }
+        models.onReady = { [weak self] in self?.pipeline.kick() }
+        library.actions.retryModelDownload = { [weak self] in self?.models.retry() }
+
         render()
         resumeUnfinished()
         showLibrary()
-        do {
-            _ = try WhisperTools.locate()
-        } catch {
-            showAlert(title: "文字起こしの準備ができていません", message: error.localizedDescription)
-        }
+        models.ensure()
+    }
+
+    private func modelStateChanged() {
+        library.setModelStatus(models.progressText, failed: { if case .failed = models.state { return true }; return false }())
+        render()
     }
 
     /// 起動済みのアプリをもう一度開いたとき（Finder でダブルクリックなど）
@@ -372,7 +378,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         case .starting, .stopping:
             symbol = "ellipsis.circle"
         case .idle:
-            if pipeline.isBusy {
+            if case .downloading(let received, let total) = models.state {
+                symbol = "arrow.down.circle"
+                title = total > 0 ? " \(Int(Double(received) / Double(total) * 100))%" : ""
+            } else if pipeline.isBusy {
                 symbol = "text.bubble"
                 title = " \(pipeline.progress)%"
             }
@@ -411,7 +420,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         case .idle:
             add("録音を開始", #selector(toggleRecording), key: "r")
         }
-        if pipeline.isBusy {
+        if let modelText = models.progressText {
+            add(modelText, nil)
+            if case .failed = models.state { add("モデルの取得をやり直す", #selector(retryModelDownload)) }
+        } else if pipeline.isBusy {
             let rest = pipeline.pendingCount > 1 ? "（残り\(pipeline.pendingCount)件）" : ""
             add("文字起こし中 \(pipeline.progress)%\(rest)", nil)
         }
@@ -472,6 +484,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc private func openBaseFolder() {
         try? FileManager.default.createDirectory(at: store.baseFolder, withIntermediateDirectories: true)
         NSWorkspace.shared.open(store.baseFolder)
+    }
+
+    @objc private func retryModelDownload() {
+        models.retry()
     }
 
     @objc private func retryFailed() {

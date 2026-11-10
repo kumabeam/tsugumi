@@ -9,32 +9,47 @@
 - 止めると自動で文字起こしが走る。音声も文字起こしも Mac の外に出ない
 - 携帯で録った音声や画面収録のファイルも、同じ流れで文字起こしできる
 
-## 必要なもの
+## 入れ方（使う人向け）
 
-- macOS 15 以上、Apple Silicon
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp)（`brew install whisper-cpp`）
-- 文字起こしモデル `~/.cache/whisper/ggml-large-v3.bin`
+必要なのは macOS 15 以上の Apple Silicon Mac。ほかに入れるものはない。
 
-声の有無を見分けるモデル（Silero VAD、約0.9MB）はアプリに同梱している。無音のところに whisper が
-「ご視聴ありがとうございました」のような決まり文句を作るのを防ぐためのもの。
+1. [Releases](https://github.com/kumabeam/tsugumi/releases) から `Tsugumi-x.y.z.zip` を落として展開し、`Tsugumi.app` を「アプリケーション」フォルダに入れる
+2. 初めて開くと「開発元を確認できない」と止められる。システム設定 > プライバシーとセキュリティ の下の方に出る「このまま開く」を押す（有料の開発者登録をしていないため。初回だけ）
+3. 起動すると文字起こしモデル（約3GB）のダウンロードが始まる。数分かかる。その間も録音はできる
+4. 最初の録音開始時に「画面収録とシステムオーディオ録音」と「マイク」の許可を求められる。両方オンにして、Tsugumi を起動し直す
 
-## ビルド
+画面収録の許可は Mac から出る音を受け取るために必要なもので、画面そのものは記録していない。
 
-Xcode は不要。コマンドラインツール（`xcode-select --install`）だけでビルドできる。
+2 の代わりにターミナルで次を打っても通る。
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Tsugumi.app
+```
+
+## 中身
+
+- 文字起こしは [whisper.cpp](https://github.com/ggml-org/whisper.cpp) をアプリに同梱して動かしている。音声は Mac の外に出ない
+- モデル `ggml-large-v3` は `~/Library/Application Support/Tsugumi/` に置かれる。すでに `~/.cache/whisper/` に持っていればそれを使い、ダウンロードしない
+- 声の有無を見分けるモデル（Silero VAD、約0.9MB）も同梱している。無音のところに whisper が「ご視聴ありがとうございました」のような決まり文句を作るのを防ぐ
+
+## ビルド（開発者向け）
+
+Xcode は不要。コマンドラインツール（`xcode-select --install`）と cmake（`brew install cmake`）があればよい。
 ただし Swift 6.0 以上（Xcode 16 相当、macOS 15 のコマンドラインツール）が要る。
 `swift --version` で 5.x と出る場合は、システム設定のソフトウェアアップデートでコマンドラインツールを更新する。
 それでも上がらなければ、一度 `sudo rm -rf /Library/Developer/CommandLineTools` してから `xcode-select --install` をやり直す。
 
 ```sh
+scripts/build-whisper.sh        # whisper.cpp をソースから組み立てる（初回だけ。build/whisper/whisper-cli）
 scripts/build-app.sh            # build/Tsugumi.app を作る
 scripts/build-app.sh --install  # /Applications に入れて起動する
+scripts/package.sh              # 上の全部をやって、配布用の build/Tsugumi-x.y.z.zip を作る
 ```
+
+`build-whisper.sh` を飛ばしてビルドしたアプリは、Homebrew の `whisper-cpp` と `~/.cache/whisper/ggml-large-v3.bin` を探しに行く（開発中の近道）。
 
 アイコンは `scripts/make-icon.swift` が描いている（仮のもの）。描き直したら PNG を各サイズに縮小して
 `iconutil` で `Resources/AppIcon.icns` を作り直す。
-
-初回の録音開始時に「画面収録とシステムオーディオ録音」と「マイク」の許可を求められる。
-画面収録の許可は Mac から出る音を受け取るために必要なもので、画面そのものは記録していない。
 
 ### 署名
 
@@ -105,7 +120,7 @@ ScreenCaptureKit ─┬─ Mac から出た音 ─→ system.wav ─┐
 | `Audio/Wav.swift` | 落ちても読める WAV の書き込み、ヘッダー修復、ステレオ結合 |
 | `Audio/AudioImporter.swift` | 外部ファイルを WAV に変換 |
 | `Audio/Microphones.swift` | マイクの一覧と、選んだマイクの記憶 |
-| `Transcribe/` | whisper-cli の実行と、結果の整形 |
+| `Transcribe/` | 同梱の whisper-cli の実行、モデルのダウンロード、結果の整形 |
 | `Session/` | 会議フォルダの管理と、文字起こしの順番待ち |
 | `Library/` | 録音一覧のウィンドウ（一覧、文字起こしの表示、再生） |
 | `App/` | メニューバー、ショートカット、通知、会議の検知 |
@@ -119,6 +134,7 @@ ScreenCaptureKit ─┬─ Mac から出た音 ─→ system.wav ─┐
 .build/release/Tsugumi resume <出力フォルダ>    # 途中で終わった録音を拾い直す
 .build/release/Tsugumi record <秒数> <出力フォルダ>
 .build/release/Tsugumi selftest <出力フォルダ>  # 合成した音で、変換と時間合わせを確かめる
+.build/release/Tsugumi fetch-model <保存フォルダ>  # 初回起動と同じモデルのダウンロードを試す（約3GB）
 .build/release/Tsugumi snapshot <保存フォルダ> <出力.png> [番号]  # ウィンドウを画面に出さずに画像にする
 ```
 

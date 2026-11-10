@@ -42,6 +42,10 @@ private struct Sidebar: View {
                     Text("見つかりません").foregroundStyle(.secondary)
                 }
             }
+            if let status = model.modelStatus {
+                Divider()
+                ModelBanner(text: status, failed: model.modelFailed, retry: model.actions.retryModelDownload)
+            }
             Divider()
             RecordBar(model: model)
         }
@@ -124,6 +128,35 @@ private struct Row: View {
         case .done:
             Text(Format.length(item.session.meta.durationSeconds ?? 0)).monospacedDigit()
         }
+    }
+}
+
+/// 文字起こしモデルのダウンロード状況（初回だけ出る）
+private struct ModelBanner: View {
+    let text: String
+    let failed: Bool
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if failed {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(text).font(.caption).foregroundStyle(.secondary)
+            }
+            if failed {
+                Button("やり直す", action: retry).controlSize(.small)
+            } else {
+                Text("録音はこの間もできます。文字起こしは準備が済んでから始まります。")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 }
 
@@ -363,7 +396,8 @@ private struct Detail: View {
                     Text("文字起こし中 \(model.progress)%").foregroundStyle(.secondary)
                 } else {
                     ProgressView()
-                    Text("文字起こしの順番を待っています").foregroundStyle(.secondary)
+                    Text(model.modelStatus == nil ? "文字起こしの順番を待っています" : "文字起こしモデルの準備を待っています")
+                        .foregroundStyle(.secondary)
                 }
             }
         case .failed:
