@@ -426,16 +426,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             menu.addItem(item)
         }
 
-        switch state {
-        case .recording(_, let since):
-            add("録音中 \(Self.clock(Date().timeIntervalSince(since)))", nil)
-            add("録音を停止", #selector(toggleRecording), key: "r")
-        case .starting:
-            add("録音を準備中…", nil)
-        case .stopping:
-            add("録音を保存中…", nil)
-        case .idle:
-            add("録音を開始", #selector(toggleRecording), key: "r")
+        // ウィンドウの「⋯」からは、ウィンドウ上に既にあるもの（録音ボタン、左上メニューのアップデート確認、終了）を省く
+        let inStatusBar = menu === statusItem.menu
+        if inStatusBar {
+            switch state {
+            case .recording(_, let since):
+                add("録音中 \(Self.clock(Date().timeIntervalSince(since)))", nil)
+                add("録音を停止", #selector(toggleRecording), key: "r")
+            case .starting:
+                add("録音を準備中…", nil)
+            case .stopping:
+                add("録音を保存中…", nil)
+            case .idle:
+                add("録音を開始", #selector(toggleRecording), key: "r")
+            }
         }
         if let modelText = models.progressText {
             add(modelText, nil)
@@ -446,8 +450,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             add("文字起こしを中止", #selector(cancelTranscription))
         }
 
-        menu.addItem(.separator())
-        if menu === statusItem.menu { add("録音一覧を開く", #selector(openLibrary)) }
+        if menu.numberOfItems > 0 { menu.addItem(.separator()) }
+        if inStatusBar { add("録音一覧を開く", #selector(openLibrary)) }
         add("ファイルから文字起こし…", #selector(chooseFiles))
         add("保存フォルダを開く", #selector(openBaseFolder))
         let failed = store.sessions(with: [.failed]).count
@@ -461,6 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             checked: UserDefaults.standard.bool(forKey: Self.detectKey))
         add("保存先を変更…", #selector(changeBaseFolder))
 
+        guard inStatusBar else { return }
         menu.addItem(.separator())
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         add("アップデートを確認…（今は \(version)）", updater.canCheck ? #selector(checkForUpdates) : nil)
