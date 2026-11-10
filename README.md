@@ -15,6 +15,9 @@
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp)（`brew install whisper-cpp`）
 - 文字起こしモデル `~/.cache/whisper/ggml-large-v3.bin`
 
+声の有無を見分けるモデル（Silero VAD、約0.9MB）はアプリに同梱している。無音のところに whisper が
+「ご視聴ありがとうございました」のような決まり文句を作るのを防ぐためのもの。
+
 ## ビルド
 
 Xcode は不要。コマンドラインツール（`xcode-select --install`）だけでビルドできる。

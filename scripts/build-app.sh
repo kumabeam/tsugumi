@@ -12,6 +12,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Tsugumi "$APP/Contents/MacOS/Tsugumi"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp Resources/ggml-silero-v5.1.2.bin "$APP/Contents/Resources/"
 
 IDENTITY="${TSUGUMI_SIGN_IDENTITY:-Tsugumi Self-Signed}"
 if security find-identity -p codesigning 2>/dev/null | grep -q "\"$IDENTITY\""; then

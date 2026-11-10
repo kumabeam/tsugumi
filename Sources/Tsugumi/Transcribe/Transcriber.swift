@@ -12,6 +12,11 @@ struct Segment {
 struct WhisperTools {
     let cli: URL
     let model: URL
+    /// 声の有無を見分けるモデル（Silero VAD）。無音の区間を whisper に渡さないために使う。
+    /// 無いときは全区間を渡す（無音のところに決まり文句を作ってしまいやすい）
+    let vadModel: URL?
+
+    static let vadModelFile = "ggml-silero-v5.1.2.bin"
 
     static let cliKey = "whisperCLI"
     static let modelKey = "whisperModel"
@@ -38,7 +43,15 @@ struct WhisperTools {
         guard let model = modelCandidates.first(where: { files.fileExists(atPath: $0) }) else {
             throw TsugumiError.message("文字起こしモデルが見つかりません。~/.cache/whisper/ggml-large-v3.bin に置いてください。")
         }
-        return WhisperTools(cli: URL(fileURLWithPath: cli), model: URL(fileURLWithPath: model))
+        let vadCandidates = [
+            Bundle.main.url(forResource: vadModelFile, withExtension: nil)?.path,
+            "\(home)/.cache/whisper/\(vadModelFile)",
+        ].compactMap { $0 }
+        let vad = vadCandidates.first(where: { files.fileExists(atPath: $0) })
+        return WhisperTools(
+            cli: URL(fileURLWithPath: cli), model: URL(fileURLWithPath: model),
+            vadModel: vad.map { URL(fileURLWithPath: $0) }
+        )
     }
 }
 
@@ -77,6 +90,7 @@ final class Transcriber: @unchecked Sendable {
             "-oj", "-of", outputBase.path, "-pp",
         ]
         if diarize { arguments.append("-di") }
+        if let vad = tools.vadModel { arguments += ["--vad", "-vm", vad.path] }
 
         let process = Process()
         process.executableURL = tools.cli
@@ -121,7 +135,7 @@ final class Transcriber: @unchecked Sendable {
         let decoded = try JSONDecoder().decode(WhisperOutput.self, from: data)
         return decoded.transcription.compactMap { item in
             let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
+            guard !text.isEmpty, !TranscriptFormatter.isFiller(text) else { return nil }
             return Segment(
                 start: Double(item.offsets.from) / 1000,
                 end: Double(item.offsets.to) / 1000,

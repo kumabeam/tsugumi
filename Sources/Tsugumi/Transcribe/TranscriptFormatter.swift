@@ -8,6 +8,25 @@ enum TranscriptFormatter {
         var text: String
     }
 
+    /// whisper が無音や雑音のところに作ってしまう決まり文句（学習元の動画字幕の名残り）。
+    /// 会議でこれを言う人はいないので、含む区間は捨てる
+    private static let fillerPhrases = [
+        "ご視聴ありがとう", "視聴者によって作成", "ご覧いただきありがとう", "チャンネル登録",
+        "Amara.org", "おやすみなさい", "ご清聴ありがとう",
+    ]
+
+    /// whisper の決まり文句だけでできた区間か
+    static func isFiller(_ text: String) -> Bool {
+        let compact = text.filter { !$0.isWhitespace && !$0.isPunctuation }
+        guard !compact.isEmpty else { return true }
+        // 決まり文句を全部取り除いて、ほとんど何も残らなければ決まり文句だけの区間
+        var rest = compact
+        for phrase in fillerPhrases {
+            rest = rest.replacingOccurrences(of: phrase, with: "")
+        }
+        return rest.count < 8 && rest.count < compact.count
+    }
+
     /// 同じ文がこの回数以上続いたら、whisper の誤動作（ループ）とみなして1行にまとめる
     private static let repeatLimit = 4
     private static let mergeGap = 1.5
