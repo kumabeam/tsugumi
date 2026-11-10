@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private let pipeline = Pipeline()
     private let notifier = Notifier()
     private let models = ModelStore()
+    private let updater = Updater()
     private let micMonitor = MicActivityMonitor()
     private lazy var library = LibraryModel(store: store)
     private var libraryWindow: NSWindow?
@@ -153,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
 
         submenu("Tsugumi", [
+            ("アップデートを確認…", #selector(checkForUpdates), "", []),
             ("Tsugumi を終了", #selector(NSApplication.terminate(_:)), "q", .command),
         ])
         submenu("編集", [
@@ -444,6 +446,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         add("保存先を変更…", #selector(changeBaseFolder))
 
         menu.addItem(.separator())
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        add("アップデートを確認…（今は \(version)）", updater.canCheck ? #selector(checkForUpdates) : nil)
         add("Tsugumi を終了", #selector(quit))
     }
 
@@ -521,6 +525,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         panel.message = "録音と文字起こしの保存先を選んでください"
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url { store.setBaseFolder(url) }
+    }
+
+    @objc private func checkForUpdates() {
+        updater.check()
     }
 
     @objc private func quit() {
