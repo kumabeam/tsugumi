@@ -41,6 +41,8 @@ final class LibraryModel: ObservableObject {
         /// 録音をゴミ箱に入れる直前（文字起こし待ちから外すため）
         var willDelete: (Session) -> Void = { _ in }
         var retryModelDownload: () -> Void = {}
+        /// 文字起こしを途中でやめる（順番待ちのものも外す）
+        var cancelTranscription: (Session) -> Void = { _ in }
     }
 
     @Published private(set) var items: [Item] = []
@@ -100,7 +102,7 @@ final class LibraryModel: ObservableObject {
     /// フォルダを読み直す。録音や文字起こしの状態が変わるたびに呼ぶ。
     func reload() {
         searchCache.removeAll()
-        items = store.sessions(with: [.recording, .recorded, .done, .failed]).reversed().map(Item.init)
+        items = store.sessions(with: [.recording, .recorded, .done, .failed, .cancelled]).reversed().map(Item.init)
         if !items.contains(where: { $0.id == selection }) {
             selection = items.first?.id
         }

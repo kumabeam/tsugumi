@@ -89,6 +89,53 @@ enum SelfTest {
         return passed
     }
 
+    /// 文字起こしを途中でやめたとき、音声がそのまま残り「中止」の状態になることを確かめる。
+    /// やっている最中の1件と、順番待ちの1件の両方。
+    @MainActor
+    static func runCancel(folder: URL) async throws -> Bool {
+        let base = folder.appendingPathComponent("selftest-cancel")
+        try? FileManager.default.removeItem(at: base)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = SessionStore(baseFolder: base)
+
+        func makeRecording(startedAt: Date, seconds: Double) throws -> Session {
+            var session = try store.create(source: .recording, startedAt: startedAt)
+            let track = try TrackWriter(url: session.folder.appendingPathComponent(Recorder.micFile))
+            try feed(track, sampleRate: 48_000, channels: 1, interleaved: false, seconds: seconds, activeChannels: [0])
+            try track.wav.close()
+            session.meta.status = .recorded
+            try session.save()
+            return session
+        }
+        let running = try makeRecording(startedAt: Date().addingTimeInterval(-120), seconds: 60)
+        let queued = try makeRecording(startedAt: Date(), seconds: 3)
+
+        let pipeline = Pipeline()
+        pipeline.enqueue(running)
+        pipeline.enqueue(queued)
+        // 順番待ちの方を先に外す
+        pipeline.cancel(folder: queued.folder)
+        // whisper が動き出すのを待ってから止める
+        var waited = 0
+        while pipeline.current == nil, waited < 50 { try await Task.sleep(for: .milliseconds(100)); waited += 1 }
+        try await Task.sleep(for: .seconds(2))
+        pipeline.cancel(folder: running.folder)
+        waited = 0
+        while pipeline.isBusy, waited < 300 { try await Task.sleep(for: .milliseconds(100)); waited += 1 }
+
+        func check(_ session: Session) -> (ok: Bool, detail: String) {
+            let status = Session.load(folder: session.folder)?.meta.status
+            let kept = FileManager.default.fileExists(atPath: session.folder.appendingPathComponent(Recorder.micFile).path)
+            let untouched = !FileManager.default.fileExists(atPath: session.transcriptURL.path)
+            return (status == .cancelled && kept && untouched, "状態 \(status?.rawValue ?? "なし"), 音声 \(kept ? "残っている" : "消えた")")
+        }
+        let first = check(running)
+        let second = check(queued)
+        let passed = first.ok && second.ok && !pipeline.isBusy
+        print("\(passed ? "OK  " : "NG  ") 文字起こしの中止 … 実行中: \(first.detail) / 順番待ち: \(second.detail)")
+        return passed
+    }
+
     /// 440Hz・振幅 0.5 の音を、実際の録音と同じ細切れのバッファで流し込む。
     private static func feed(
         _ track: TrackWriter, sampleRate: Double, channels: Int, interleaved: Bool,

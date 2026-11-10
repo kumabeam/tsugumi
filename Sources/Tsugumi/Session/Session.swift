@@ -14,6 +14,8 @@ struct Session {
         case recorded
         case done
         case failed
+        /// 文字起こしを途中でやめた。音声は残っていて、やり直せる
+        case cancelled
     }
 
     struct Meta: Codable {

@@ -125,6 +125,8 @@ private struct Row: View {
             }
         case .failed:
             Label("失敗", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        case .cancelled:
+            Text("中止")
         case .done:
             Text(Format.length(item.session.meta.durationSeconds ?? 0)).monospacedDigit()
         }
@@ -399,6 +401,14 @@ private struct Detail: View {
                     Text(model.modelStatus == nil ? "文字起こしの順番を待っています" : "文字起こしモデルの準備を待っています")
                         .foregroundStyle(.secondary)
                 }
+                Button("中止") { model.actions.cancelTranscription(item.session) }
+            }
+        case .cancelled:
+            VStack(spacing: 10) {
+                Image(systemName: "stop.circle").font(.largeTitle).foregroundStyle(.secondary)
+                Text("文字起こしを中止しました")
+                Text("音声は残っています。").font(.callout).foregroundStyle(.secondary)
+                Button("やり直す") { model.actions.retry(item.session) }
             }
         case .failed:
             VStack(spacing: 10) {

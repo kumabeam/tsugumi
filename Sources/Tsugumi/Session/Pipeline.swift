@@ -13,6 +13,8 @@ final class Pipeline {
     private(set) var progress = 0
     private var running = false
     private var cancelled = false
+    /// いまの1件だけをやめる指示が出ているか
+    private var skipping = false
     private let transcriber = Transcriber()
 
     /// これより小さい最大振幅しかないトラックは「音が入っていない」とみなす
@@ -51,6 +53,23 @@ final class Pipeline {
             && statuses.contains(onDisk.meta.status)
     }
 
+    /// 1件の文字起こしをやめる。録音の音声はそのまま残り、「やり直す」でまた始められる。
+    func cancel(folder: URL) {
+        if current?.folder.path == folder.path {
+            skipping = true
+            transcriber.cancel()
+            return
+        }
+        guard let index = waiting.firstIndex(where: { $0.folder.path == folder.path }) else { return }
+        var session = waiting.remove(at: index)
+        onChange?()
+        guard Self.isSameRecording(session, allowing: [.recorded]) else { return }
+        session.meta.status = .cancelled
+        session.meta.error = nil
+        try? session.save()
+        onFinished?(session, nil)
+    }
+
     /// アプリ終了時に呼ぶ。途中の分は「文字起こし待ち」のまま残り、次回起動時に再開される。
     func cancelAll() {
         cancelled = true
@@ -70,6 +89,7 @@ final class Pipeline {
             }
             current = session
             progress = 0
+            skipping = false
             onChange?()
 
             var failure: Error?
@@ -79,9 +99,14 @@ final class Pipeline {
                 session.meta.error = nil
             } catch {
                 if cancelled { break }
-                failure = error
-                session.meta.status = .failed
-                session.meta.error = error.localizedDescription
+                if skipping {
+                    session.meta.status = .cancelled
+                    session.meta.error = nil
+                } else {
+                    failure = error
+                    session.meta.status = .failed
+                    session.meta.error = error.localizedDescription
+                }
             }
             // 文字起こしの間に付けられた名前を、古い内容で上書きしない
             if let onDisk = Session.load(folder: session.folder) { session.meta.title = onDisk.meta.title }
@@ -114,6 +139,8 @@ final class Pipeline {
         }
         session.meta.durationSeconds = duration
 
+        // 音声の準備中に「中止」が押されていたら、whisper を始めない
+        if skipping { throw CancellationError() }
         let segments = try await transcriber.run(wav: prepared.wav, diarize: prepared.diarize, tools: tools) { percent in
             Task { @MainActor [weak self] in
                 self?.progress = percent

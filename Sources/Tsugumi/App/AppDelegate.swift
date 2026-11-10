@@ -58,7 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             toggleRecording: { [weak self] in self?.toggleRecording() },
             retry: { [weak self] session in self?.retry(session) },
             importFiles: { [weak self] urls in self?.importFiles(urls) },
-            willDelete: { [weak self] session in self?.pipeline.discard(folder: session.folder) }
+            willDelete: { [weak self] session in self?.pipeline.discard(folder: session.folder) },
+            cancelTranscription: { [weak self] session in self?.pipeline.cancel(folder: session.folder) }
         )
         NSApp.mainMenu = Self.makeMainMenu()
         // Dock と ⌘Tab に出るアイコンを明示する。起動後に「普通のアプリ」へ切り替える作りだと、
@@ -331,6 +332,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func transcriptionFinished(_ session: Session, error: Error?) {
         library.reload()
+        // 自分で止めたものは知らせない
+        guard session.meta.status != .cancelled else { return }
         if let error {
             notifier.notify(title: "文字起こしに失敗しました", body: error.localizedDescription, openFolder: session.folder)
         } else {
@@ -428,6 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         } else if pipeline.isBusy {
             let rest = pipeline.pendingCount > 1 ? "（残り\(pipeline.pendingCount)件）" : ""
             add("文字起こし中 \(pipeline.progress)%\(rest)", nil)
+            add("文字起こしを中止", #selector(cancelTranscription))
         }
 
         menu.addItem(.separator())
@@ -492,6 +496,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc private func retryModelDownload() {
         models.retry()
+    }
+
+    @objc private func cancelTranscription() {
+        guard let current = pipeline.current else { return }
+        pipeline.cancel(folder: current.folder)
     }
 
     @objc private func retryFailed() {
