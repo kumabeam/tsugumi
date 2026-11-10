@@ -19,7 +19,7 @@ final class TrackWriter {
     ///   - origin: 録音全体の開始時刻。2トラックを同じ時間軸に並べるための基準。
     ///   - elapsed: 録音開始からの実時間（秒）。時刻が信用できないときの代わりに使う。
     func append(_ sampleBuffer: CMSampleBuffer, origin: CMTime, elapsed: Double) throws {
-        guard let input = Self.pcmBuffer(from: sampleBuffer) else { return }
+        guard let input = try Self.pcmBuffer(from: sampleBuffer) else { return }
 
         var offset = (sampleBuffer.presentationTimeStamp - origin).seconds
         if offset.isFinite {
@@ -132,15 +132,40 @@ final class TrackWriter {
         return Array(UnsafeBufferPointer(start: outputData[0], count: Int(output.frameLength)))
     }
 
-    private static func pcmBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
-        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return nil }
-        let format = AVAudioFormat(cmAudioFormatDescription: description)
+    /// 届いた音声を AVAudioPCMBuffer に写す。形式が扱えないものならエラー（録音は続き、マイクだけ無音になる）。
+    private static func pcmBuffer(from sampleBuffer: CMSampleBuffer) throws -> AVAudioPCMBuffer? {
+        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(description) else { return nil }
         let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-        guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
+        guard frames > 0 else { return nil }
+        // AVAudioFormat(cmAudioFormatDescription:) は扱えない形式で nil を返し、Swift 側はそれに気づけず落ちる。
+        // 失敗が分かる方の初期化を使う（集約デバイスなど、変わった構成のマイクで起きた）
+        var asbd = streamDescription.pointee
+        guard asbd.mFormatID == kAudioFormatLinearPCM, asbd.mChannelsPerFrame > 0, asbd.mSampleRate > 0,
+              let format = makeFormat(&asbd),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
+            throw TsugumiError.message("音声形式を扱えません（\(describe(asbd))）")
+        }
         buffer.frameLength = frames
         let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
             sampleBuffer, at: 0, frameCount: Int32(frames), into: buffer.mutableAudioBufferList
         )
         return status == noErr ? buffer : nil
+    }
+
+    /// 3チャンネル以上は配置（レイアウト）を付けないと AVAudioFormat が作れない。
+    /// 全チャンネルを平均してモノラルにするだけなので、配置の意味は問わず「順番どおり」で足りる
+    private static func makeFormat(_ asbd: inout AudioStreamBasicDescription) -> AVAudioFormat? {
+        let channels = asbd.mChannelsPerFrame
+        if channels > 2, let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | channels) {
+            return AVAudioFormat(streamDescription: &asbd, channelLayout: layout)
+        }
+        return AVAudioFormat(streamDescription: &asbd)
+    }
+
+    private static func describe(_ asbd: AudioStreamBasicDescription) -> String {
+        let id = asbd.mFormatID
+        let fourcc = String(bytes: [24, 16, 8, 0].map { UInt8((id >> $0) & 0xff) }, encoding: .ascii) ?? "?"
+        return "\(fourcc) \(asbd.mChannelsPerFrame)ch \(Int(asbd.mSampleRate))Hz \(asbd.mBitsPerChannel)bit flags=\(asbd.mFormatFlags)"
     }
 }
