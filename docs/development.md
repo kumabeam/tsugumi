@@ -41,10 +41,19 @@ tccutil reset Microphone io.github.kumabeam.tsugumi
 
 ## リリース
 
-1. `Resources/Info.plist` のバージョンを上げる
-2. `scripts/package.sh`
+1. `Resources/Info.plist` の `CFBundleShortVersionString`（表示用、例 0.2.1）と `CFBundleVersion`（整数。毎回 +1。Sparkle はこちらで新旧を比べる）を上げる
+2. `scripts/package.sh` → `build/Tsugumi-X.Y.Z.zip` と `appcast.xml` ができる
 3. `git tag vX.Y.Z && git push --tags`
-4. GitHub の Releases に zip を添付
+4. GitHub の Releases に zip を添付して公開
+5. `appcast.xml` をコミットして push（**4 の後**。先に push すると、まだ無い zip を取りに行く）
+
+## アプリ内アップデート（Sparkle）
+
+- アプリは1日1回 `https://raw.githubusercontent.com/kumabeam/tsugumi/main/appcast.xml` を見に行き、新しい版があれば知らせる。メニューの「アップデートを確認…」で手動でも
+- zip の正しさは EdDSA の署名で確かめる。公開鍵は `Info.plist` の `SUPublicEDKey`、秘密鍵はビルドする Mac のキーチェーン（`generate_keys` が入れたもの）
+- **秘密鍵を失くすと、以後の更新を今のユーザーに届けられなくなる。** 控えを取る: `.build/artifacts/sparkle/Sparkle/bin/generate_keys -x 保存先` で書き出し、リポジトリの外（パスワード管理ツールなど）に置く。別の Mac でビルドするときは `generate_keys -i ファイル` で取り込む
+- Developer ID（有料）は無くても更新は動く。Sparkle が隔離の印を外すので「開発元を確認できない」は初回インストールのときだけ
+- 動作確認: `open -a Tsugumi --args -updateFeedURL http://127.0.0.1:8765/appcast.xml -checkUpdatesOnLaunch YES` で、手元のサーバーに置いた appcast を見に行かせられる
 
 ## 文字起こしの部品
 

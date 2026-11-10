@@ -10,7 +10,7 @@
             <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/kumabeam/tsugumi/releases/download/v0.2.1/Tsugumi-0.2.1.zip" length="4685705" type="application/octet-stream" sparkle:edSignature="uhCBPeQjtRZv17oXm2Eo/qHZvJQDfZgDp2H3KYxBo9q+wdpNYlrRaRb1acp/OCtv26tI8wuKHj3QYxv7cV1OCA=="/>
+            <enclosure url="https://github.com/kumabeam/tsugumi/releases/download/v0.2.1/Tsugumi-0.2.1.zip" length="4685686" type="application/octet-stream" sparkle:edSignature="ZAVvHuiLTHJP5nDeJ3BIOnnd0vkg3CaH4IWNsD8KqvpjK/n9pcSKn7tVeKSc96gKyTHbTiqQdDPKbcGAuK6JDg=="/>
         </item>
     </channel>
 </rss>
