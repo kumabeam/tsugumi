@@ -191,6 +191,41 @@ private struct RecordBar: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
+        .overlay(alignment: .trailing) {
+            MenuButton(action: model.actions.showMenu)
+                .help("メニュー（メニューバーのアイコンと同じ操作）")
+                .padding(.trailing, 12)
+        }
+    }
+}
+
+/// 「⋯」ボタン。押すとメニューバーと同じメニューがその場に出る。
+/// メニューを出す位置に AppKit のビューが要るので、SwiftUI の Button ではなく NSButton を使う
+private struct MenuButton: NSViewRepresentable {
+    let action: (NSView) -> Void
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(image: NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "メニュー")!,
+                              target: context.coordinator, action: #selector(Coordinator.pressed(_:)))
+        button.bezelStyle = .accessoryBarAction
+        button.isBordered = false
+        button.symbolConfiguration = .init(pointSize: 20, weight: .regular)
+        button.contentTintColor = .secondaryLabelColor
+        button.imageScaling = .scaleProportionallyUpOrDown
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    final class Coordinator: NSObject {
+        var action: (NSView) -> Void
+        init(action: @escaping (NSView) -> Void) { self.action = action }
+        @objc func pressed(_ sender: NSButton) { action(sender) }
     }
 }
 

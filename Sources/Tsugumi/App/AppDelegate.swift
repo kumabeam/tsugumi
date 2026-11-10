@@ -59,7 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             retry: { [weak self] session in self?.retry(session) },
             importFiles: { [weak self] urls in self?.importFiles(urls) },
             willDelete: { [weak self] session in self?.pipeline.discard(folder: session.folder) },
-            cancelTranscription: { [weak self] session in self?.pipeline.cancel(folder: session.folder) }
+            cancelTranscription: { [weak self] session in self?.pipeline.cancel(folder: session.folder) },
+            showMenu: { [weak self] anchor in self?.popUpMenu(from: anchor) }
         )
         NSApp.mainMenu = Self.makeMainMenu()
         // Dock と ⌘Tab に出るアイコンを明示する。起動後に「普通のアプリ」へ切り替える作りだと、
@@ -127,6 +128,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc private func openLibrary() {
         showLibrary()
+    }
+
+    /// ウィンドウの「⋯」ボタン用。メニューバーが隠れている（ノッチ、全画面）ときの入り口
+    private lazy var windowMenu: NSMenu = {
+        let menu = NSMenu()
+        menu.delegate = self
+        return menu
+    }()
+
+    private func popUpMenu(from anchor: NSView) {
+        windowMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -435,7 +447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
 
         menu.addItem(.separator())
-        add("録音一覧を開く", #selector(openLibrary))
+        if menu === statusItem.menu { add("録音一覧を開く", #selector(openLibrary)) }
         add("ファイルから文字起こし…", #selector(chooseFiles))
         add("保存フォルダを開く", #selector(openBaseFolder))
         let failed = store.sessions(with: [.failed]).count

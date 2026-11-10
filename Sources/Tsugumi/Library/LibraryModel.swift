@@ -43,6 +43,8 @@ final class LibraryModel: ObservableObject {
         var retryModelDownload: () -> Void = {}
         /// 文字起こしを途中でやめる（順番待ちのものも外す）
         var cancelTranscription: (Session) -> Void = { _ in }
+        /// メニューバーと同じメニューを、ウィンドウの中のボタンから出す
+        var showMenu: (NSView) -> Void = { _ in }
     }
 
     @Published private(set) var items: [Item] = []
