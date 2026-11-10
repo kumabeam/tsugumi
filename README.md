@@ -18,6 +18,9 @@
 ## ビルド
 
 Xcode は不要。コマンドラインツール（`xcode-select --install`）だけでビルドできる。
+ただし Swift 6.0 以上（Xcode 16 相当、macOS 15 のコマンドラインツール）が要る。
+`swift --version` で 5.x と出る場合は、システム設定のソフトウェアアップデートでコマンドラインツールを更新する。
+それでも上がらなければ、一度 `sudo rm -rf /Library/Developer/CommandLineTools` してから `xcode-select --install` をやり直す。
 
 ```sh
 scripts/build-app.sh            # build/Tsugumi.app を作る
