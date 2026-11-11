@@ -5,6 +5,21 @@ import ScreenCaptureKit
 /// Mac から出ている音とマイクを同時に録る。
 /// 仮想オーディオデバイスも出力先の切り替えも要らない（ScreenCaptureKit が OS から直接受け取る）。
 /// 内部の状態は専用の直列キューの上でだけ触る（だから @unchecked Sendable）。
+/// 録音中の音量。最大振幅（0〜1）
+struct AudioLevels: Equatable {
+    var system: Float = 0
+    var mic: Float = 0
+
+    /// 聞こえる音が入っているか（最大振幅 -46dB くらいより上）
+    var hasSound: Bool { max(system, mic) > 0.005 }
+
+    /// 表示用。-60dB を 0、0dB を 1 にした目盛り
+    static func meter(_ peak: Float) -> Double {
+        guard peak > 0 else { return 0 }
+        return max(0, min(1, 1 + Double(20 * log10(peak)) / 60))
+    }
+}
+
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     static let systemFile = "system.wav"
     static let micFile = "mic.wav"
@@ -53,6 +68,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: discardQueue)
         try await stream.startCapture()
         self.stream = stream
+    }
+
+    /// 直近の音量（相手 = Mac から出た音、自分 = マイク）。1秒おきに読む前提
+    func takeLevels() -> AudioLevels {
+        AudioLevels(system: system?.takePeak() ?? 0, mic: mic?.takePeak() ?? 0)
     }
 
     /// 録音を止めてファイルを閉じる。書き込み中にエラーがあれば返す。

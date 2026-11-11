@@ -10,6 +10,13 @@ final class TrackWriter {
     /// このトラックの時刻のずれ補正（秒）。最初のバッファで決める。
     private var bias: Double?
     private let gapTolerance = Wav.recordingRate / 10
+    /// 前回 takePeak() してから届いた音の最大振幅（0〜1）。録音中の音量表示用
+    private let peak = Locked<Float>(0)
+
+    /// 直近の最大振幅を返して 0 に戻す。1秒おきに読むと「この1秒の音量」になる
+    func takePeak() -> Float {
+        peak.withValue { value in defer { value = 0 }; return value }
+    }
 
     init(url: URL) throws {
         wav = try WavWriter(url: url, sampleRate: Wav.recordingRate)
@@ -34,7 +41,10 @@ final class TrackWriter {
             if gap > gapTolerance { try wav.appendSilence(frames: gap) }
         }
 
-        try wav.append(try convert(input))
+        let samples = try convert(input)
+        let loudest = samples.reduce(Int16(0)) { max($0, $1 == .min ? .max : abs($1)) }
+        peak.withValue { $0 = max($0, Float(loudest) / 32767) }
+        try wav.append(samples)
     }
 
     func padToLength(frames: Int) throws {

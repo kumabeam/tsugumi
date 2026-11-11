@@ -28,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var recorder: Recorder?
     private var state: State = .idle
     private var timer: Timer?
+    /// 録音中、最後に音（相手か自分）が届いた時刻。無音が続いたときの通知に使う
+    private var lastSoundAt = Date()
+    private var warnedSilence = false
+    private static let silenceWarningAfter: TimeInterval = 5 * 60
     private var hotKey: HotKey?
     private var lastMeetingNotice = Date.distantPast
 
@@ -263,9 +267,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 }
                 self.recorder = recorder
                 state = .recording(session, since: Date())
+                lastSoundAt = Date()
+                warnedSilence = false
                 library.reload()
                 timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                    Task { @MainActor in self?.render() }
+                    Task { @MainActor in self?.recordingTick() }
                 }
             } catch {
                 state = .idle
@@ -273,6 +279,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             }
             render()
         }
+    }
+
+    /// 録音中、1秒ごと。音量を表示に渡し、長く無音なら知らせる
+    private func recordingTick() {
+        if let recorder {
+            let levels = recorder.takeLevels()
+            library.setLevels(levels)
+            if levels.hasSound {
+                lastSoundAt = Date()
+                warnedSilence = false
+            } else if !warnedSilence, Date().timeIntervalSince(lastSoundAt) > Self.silenceWarningAfter {
+                warnedSilence = true
+                notifier.notify(
+                    title: "5分間、音が届いていません",
+                    body: "相手の音もマイクの音も入っていません。マイクの選択と、音が Mac から出ているかを確認してください。"
+                )
+            }
+        }
+        render()
     }
 
     private func stopRecording() {
@@ -379,6 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             library.setRecording(since: since)
         } else {
             library.setRecording(since: nil)
+            library.setLevels(AudioLevels())
         }
         library.setTranscribing(id: pipeline.current?.folder.path, progress: pipeline.progress)
 

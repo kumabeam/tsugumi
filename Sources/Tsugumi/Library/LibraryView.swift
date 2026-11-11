@@ -166,7 +166,7 @@ private struct RecordBar: View {
     @ObservedObject var model: LibraryModel
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Button(action: model.actions.toggleRecording) {
                 ZStack {
                     Circle()
@@ -186,15 +186,52 @@ private struct RecordBar: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(Format.clock(context.date.timeIntervalSince(since)))
                         .font(.title3.monospacedDigit())
+                        .lineLimit(1)
+                        .fixedSize()
                 }
+                LevelMeters(levels: model.levels)
             }
         }
+        // 右端の「⋯」と重ならないようにする
+        .padding(.trailing, 32)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
         .overlay(alignment: .trailing) {
             MenuButton(action: model.actions.showMenu)
                 .help("メニュー（メニューバーのアイコンと同じ操作）")
                 .padding(.trailing, 12)
+        }
+    }
+}
+
+/// 録音中の音量。相手（Mac から出た音）と自分（マイク）を別々に出す。
+/// 音が届いていないことに、会議の最中に気づくためのもの
+private struct LevelMeters: View {
+    let levels: AudioLevels
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            row("相手", levels.system)
+            row("自分", levels.mic)
+        }
+        .fixedSize()
+        .help("この1秒間の音量。長く振れないときは、マイクの選択や音の出力先を確認してください")
+    }
+
+    private func row(_ label: String, _ peak: Float) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .trailing)
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                Capsule()
+                    .fill(peak > 0.005 ? Color.green : Color.secondary.opacity(0.4))
+                    .frame(width: max(3, 56 * AudioLevels.meter(peak)))
+            }
+            .frame(width: 56, height: 6)
+            .animation(.linear(duration: 0.2), value: peak)
         }
     }
 }

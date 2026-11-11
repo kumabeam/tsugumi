@@ -53,18 +53,6 @@ struct WhisperTools {
     }
 }
 
-/// 複数のスレッドから触る値を、鍵をかけて守る入れ物。
-private final class Locked<Value>: @unchecked Sendable {
-    private var value: Value
-    private let lock = NSLock()
-
-    init(_ value: Value) { self.value = value }
-
-    func withValue<Result>(_ body: (inout Value) -> Result) -> Result {
-        lock.withLock { body(&value) }
-    }
-}
-
 /// whisper-cli を子プロセスで動かして文字起こしする。音声は Mac の外に出ない。
 final class Transcriber: @unchecked Sendable {
     private let running = Locked<Process?>(nil)
