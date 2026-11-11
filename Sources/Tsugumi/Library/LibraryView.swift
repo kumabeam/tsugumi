@@ -10,11 +10,12 @@ struct LibraryView: View {
         // NavigationSplitView はタイトルバーにサイドバー開閉ボタンを作るので、素の分割ビューを使う
         HSplitView {
             Sidebar(model: model)
-                .frame(minWidth: 250, idealWidth: 270, maxWidth: 380)
-            Group {
+                .frame(minWidth: 280, idealWidth: 280, maxWidth: 380)
+            // Group だと選択の有無で子が入れ替わり、分割ビューの幅が戻る。ZStack で同じ子に保つ
+            ZStack {
                 if let item = model.selectedItem {
+                    // ここで .id(item.id) を付けると分割ビューの子が作り直され、サイドバーの幅が元に戻ってしまう
                     Detail(model: model, player: model.player, item: item)
-                        .id(item.id)
                 } else {
                     ContentUnavailableView {
                         Label("録音がありません", systemImage: "waveform")
@@ -63,14 +64,44 @@ struct LibraryView: View {
 private struct Sidebar: View {
     @ObservedObject var model: LibraryModel
     @FocusState private var searchFocused: Bool
+    /// ダブルクリックでタイトルを打ち直している行
+    @State private var editingID: String?
 
     var body: some View {
         VStack(spacing: 0) {
             searchField
             List(model.filtered, selection: $model.selection) { item in
-                Row(item: item, transcribingProgress: model.transcribingID == item.id ? model.progress : nil)
+                Row(
+                    item: item,
+                    transcribingProgress: model.transcribingID == item.id ? model.progress : nil,
+                    isEditing: editingID == item.id,
+                    rename: { model.rename(item, to: $0) },
+                    endEditing: { editingID = nil }
+                )
             }
             .listStyle(.sidebar)
+            // 右クリックとダブルクリック。行の中に onTapGesture を置くと1クリックの選択を邪魔するので、List に付ける
+            .contextMenu(forSelectionType: String.self) { ids in
+                if let item = model.items.first(where: { $0.id == ids.first }) {
+                    Button("名前を変更") { editingID = item.id }
+                    Button("ゴミ箱に入れる") { model.pendingDelete = item }
+                        .disabled(!model.canDelete(item))
+                }
+            } primaryAction: { ids in
+                editingID = ids.first
+            }
+            // ⌘⌫ は AppDelegate のキー監視が受けて pendingDelete に入れる（SwiftUI のショートカットにすると
+            // 文字入力中の ⌘⌫ まで奪ってしまうため）
+            .confirmationDialog(
+                "「\(model.pendingDelete?.title ?? "")」をゴミ箱に入れますか？",
+                isPresented: Binding(get: { model.pendingDelete != nil }, set: { if !$0 { model.pendingDelete = nil } }),
+                presenting: model.pendingDelete
+            ) { item in
+                Button("ゴミ箱に入れる", role: .destructive) { model.moveToTrash(item) }
+                Button("キャンセル", role: .cancel) {}
+            } message: { _ in
+                Text("録音と文字起こしがゴミ箱に移動します。Finder のゴミ箱から戻せます。")
+            }
             .overlay {
                 if model.filtered.isEmpty, !model.search.isEmpty {
                     Text("見つかりません").foregroundStyle(.secondary)
@@ -120,12 +151,37 @@ private struct Row: View {
     let item: LibraryModel.Item
     /// 文字起こし中なら進み具合（%）
     let transcribingProgress: Int?
+    /// ダブルクリックされて、タイトルを打ち直している最中か
+    let isEditing: Bool
+    /// タイトルを打ち直したとき
+    let rename: (String) -> Void
+    let endEditing: () -> Void
+
+    @State private var draft = ""
+    @FocusState private var editorFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(item.title)
-                .fontWeight(.semibold)
-                .lineLimit(1)
+            if isEditing {
+                // Return で決定、esc でやめる
+                TextField("タイトル", text: $draft)
+                    .textFieldStyle(.plain)
+                    .fontWeight(.semibold)
+                    .focused($editorFocused)
+                    .onSubmit { finishEditing(commit: true) }
+                    .onExitCommand { finishEditing(commit: false) }
+                    .onChange(of: editorFocused) { _, focused in
+                        if !focused { finishEditing(commit: true) }
+                    }
+                    .onAppear { draft = item.title }
+                    // 出た直後はまだウィンドウに入っていないことがあるので、一拍おいてフォーカスする
+                    .task { editorFocused = true }
+            } else {
+                Text(item.title)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .help("ダブルクリックで名前を変える")
+            }
             HStack {
                 Text(item.dateText)
                 Spacer()
@@ -135,6 +191,13 @@ private struct Row: View {
             .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+
+    private func finishEditing(commit: Bool) {
+        guard isEditing else { return }
+        // 変えていないのに保存すると、自動の名前が本物のタイトルとして残ってしまう
+        if commit, draft != item.title { rename(draft) }
+        endEditing()
     }
 
     @ViewBuilder
@@ -217,10 +280,14 @@ private struct RecordBar: View {
                 LevelMeters(model: model.levels)
             }
         }
-        // 右端のボタンと重ならないようにする
+        // 両端のボタンと重ならないようにする
+        .padding(.leading, 48)
         .padding(.trailing, 32)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
+        .overlay(alignment: .leading) {
+            microphoneMenu
+        }
         .overlay(alignment: .trailing) {
             Button(action: model.actions.chooseFiles) {
                 Image(systemName: "doc.badge.plus")
@@ -231,6 +298,42 @@ private struct RecordBar: View {
             .help("ファイルから文字起こし…（ウィンドウにドロップしてもよい）")
             .padding(.trailing, 12)
         }
+    }
+
+    /// 使うマイクの切り替え。設定（⌘,）と同じ内容を、録音を始める場所から直接選べるようにする
+    private var microphoneMenu: some View {
+        UpwardMenu(help: "マイクを選ぶ", items: microphoneItems) {
+            HStack(spacing: 3) {
+                Image(systemName: "mic").font(.system(size: 17))
+                Image(systemName: "chevron.up").font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.leading, 12)
+            .padding(.trailing, 6)
+        }
+    }
+
+    /// 開くたびに、その時つながっているマイクで作る
+    private func microphoneItems() -> [PopUpItem] {
+        let recording = model.recordingSince != nil
+        let available = Microphones.available()
+        let selected = Microphones.selectedID.flatMap { id in available.first { $0.id == id }?.id }
+        let systemName = Microphones.systemDefault()?.name
+        var items: [PopUpItem] = [
+            .entry("macOS の設定に従う" + (systemName.map { "（\($0)）" } ?? ""), checked: selected == nil, enabled: !recording) {
+                model.actions.selectMicrophone(nil)
+            },
+            .separator,
+        ]
+        items += available.map { microphone in
+            .entry(microphone.name, checked: microphone.id == selected, enabled: !recording) {
+                model.actions.selectMicrophone(microphone.id)
+            }
+        }
+        if recording {
+            items += [.separator, .entry("録音中は変えられません", enabled: false) {}]
+        }
+        return items
     }
 }
 
@@ -282,6 +385,10 @@ private struct Detail: View {
     @State private var jumpTarget: Int?
     @FocusState private var titleFocused: Bool
     @FocusState private var findFocused: Bool
+    /// タイトルを打ち始めたときの録音の id。別の録音に切り替えた直後にフォーカスが外れても、元の録音に書く
+    @State private var editingTitleOf: String?
+    /// jumpTarget がどの録音のものか（録音を切り替えた直後に、前の録音の行へ飛ばないため）
+    @State private var jumpFor: String?
 
     /// 検索語を含む行
     private var matches: [Int] {
@@ -300,6 +407,8 @@ private struct Detail: View {
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // 録音を切り替えたら、文字起こしのスクロール位置を頭に戻す
+                .id(item.id)
             if LibraryModel.playableAudio(of: item.session) != nil {
                 Divider()
                 PlayerBar(player: player)
@@ -308,15 +417,29 @@ private struct Detail: View {
         .onAppear {
             title = item.title
             // 一覧の検索から来たときは、最初に見つかった行へ
-            jumpTarget = matches.first
+            jump(to: matches.first)
+        }
+        .onChange(of: item.id) { _, _ in
+            // 別の録音に切り替わった。ビューは作り直さない（分割ビューの幅が戻るため）ので、状態をここで戻す
+            commitTitle()
+            titleFocused = false
+            title = item.title
+            copied = false
+            confirmingDelete = false
+            matchPosition = 0
+            jump(to: matches.first)
         }
         .onChange(of: model.highlightQuery) { _, _ in
             matchPosition = 0
-            jumpTarget = matches.first
+            jump(to: matches.first)
         }
         .background { shortcuts }
         .onChange(of: titleFocused) { _, focused in
-            if !focused { commitTitle() }
+            if focused { editingTitleOf = item.id } else { commitTitle() }
+        }
+        .onChange(of: item.title) { _, new in
+            // 一覧側で名前を変えたら、こちらの表示も合わせる（打っている最中は触らない）
+            if !titleFocused, editingTitleOf == nil { title = new }
         }
         .confirmationDialog("「\(item.title)」をゴミ箱に入れますか？", isPresented: $confirmingDelete) {
             Button("ゴミ箱に入れる", role: .destructive) { model.moveToTrash(item) }
@@ -327,7 +450,16 @@ private struct Detail: View {
     }
 
     private func commitTitle() {
-        model.rename(item, to: title)
+        guard let id = editingTitleOf else { return }
+        editingTitleOf = nil
+        // 打ち始めたときの Item をそのまま使わない（その間に録音の状態が進んでいると、古い状態を書き戻してしまう）
+        guard let target = model.items.first(where: { $0.id == id }), title != target.title else { return }
+        model.rename(target, to: title)
+    }
+
+    private func jump(to line: Int?) {
+        jumpFor = item.id
+        jumpTarget = line
     }
 
     // MARK: 文字起こしの中の検索
@@ -348,7 +480,7 @@ private struct Detail: View {
         let found = matches
         guard !found.isEmpty else { return }
         matchPosition = (matchPosition + direction + found.count) % found.count
-        jumpTarget = found[matchPosition]
+        jump(to: found[matchPosition])
     }
 
     private var findBar: some View {
@@ -432,8 +564,8 @@ private struct Detail: View {
             } label: {
                 Image(systemName: "trash")
             }
-            .help("ゴミ箱に入れる")
-            .disabled(item.session.meta.status == .recording || model.transcribingID == item.id)
+            .help("ゴミ箱に入れる（⌘⌫）")
+            .disabled(!model.canDelete(item))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -455,7 +587,7 @@ private struct Detail: View {
             } else {
                 Transcript(
                     lines: model.lines, player: player,
-                    query: model.highlightQuery, jumpTarget: jumpTarget
+                    query: model.highlightQuery, jumpTarget: jumpFor == item.id ? jumpTarget : nil
                 )
             }
         case .recording:
@@ -635,26 +767,21 @@ private struct PlayerBar: View {
 private extension PlayerBar {
     /// 再生速度の切り替え
     var speedMenu: some View {
-        Menu {
-            ForEach(PlayerModel.rates, id: \.self) { rate in
-                Button {
-                    player.setRate(rate)
-                } label: {
-                    if rate == player.rate {
-                        Label(PlayerModel.label(for: rate), systemImage: "checkmark")
-                    } else {
-                        Text(PlayerModel.label(for: rate))
-                    }
-                }
+        UpwardMenu(help: "再生速度", items: {
+            PlayerModel.rates.map { rate in
+                .entry(PlayerModel.label(for: rate), checked: rate == player.rate) { player.setRate(rate) }
             }
-        } label: {
-            Text(PlayerModel.label(for: player.rate))
-                .font(.callout.monospacedDigit())
+        }) {
+            HStack(spacing: 3) {
+                Text(PlayerModel.label(for: player.rate))
+                    .font(.callout.monospacedDigit())
+                Image(systemName: "chevron.up").font(.caption2.weight(.semibold))
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
         }
-        .menuStyle(.borderlessButton)
         .fixedSize()
         .foregroundStyle(.primary)
-        .help("再生速度")
     }
 }
 

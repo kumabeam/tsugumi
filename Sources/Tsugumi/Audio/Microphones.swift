@@ -21,9 +21,14 @@ enum Microphones {
         AVCaptureDevice.default(for: .audio).map { Microphone(id: $0.uniqueID, name: $0.localizedName) }
     }
 
+    /// メニューで選んであるマイクの id（つながっているかは見ない）
+    static var selectedID: String? {
+        UserDefaults.standard.string(forKey: selectionKey)
+    }
+
     /// メニューで選んであるマイク。未選択、または今つながっていなければ nil（macOS の設定に従う）。
     static func selected() -> Microphone? {
-        guard let id = UserDefaults.standard.string(forKey: selectionKey) else { return nil }
+        guard let id = selectedID else { return nil }
         return available().first { $0.id == id }
     }
 

@@ -45,6 +45,8 @@ final class LibraryModel: ObservableObject {
         var cancelTranscription: (Session) -> Void = { _ in }
         /// ファイルを選んで文字起こしする
         var chooseFiles: () -> Void = {}
+        /// 使うマイクを変える（nil = macOS の設定に従う）
+        var selectMicrophone: (String?) -> Void = { _ in }
     }
 
     @Published private(set) var items: [Item] = []
@@ -65,6 +67,8 @@ final class LibraryModel: ObservableObject {
     /// 文字起こしモデルの準備状況。揃っていれば nil
     @Published private(set) var modelStatus: String?
     @Published private(set) var modelFailed = false
+    /// ゴミ箱に入れる前の確認を出している録音（一覧の右クリックと ⌘⌫ から）
+    @Published var pendingDelete: Item?
 
     let player = PlayerModel()
     var actions = Actions()
@@ -184,6 +188,17 @@ final class LibraryModel: ObservableObject {
 
     func revealInFinder(_ item: Item) {
         NSWorkspace.shared.activateFileViewerSelecting([item.session.folder])
+    }
+
+    /// 録音中と文字起こし中は消せない
+    func canDelete(_ item: Item) -> Bool {
+        item.session.meta.status != .recording && transcribingID != item.id
+    }
+
+    /// ⌘⌫。選んでいる録音の確認ダイアログを出す
+    func requestDeleteSelection() {
+        guard let item = selectedItem, canDelete(item) else { return }
+        pendingDelete = item
     }
 
     /// ゴミ箱に入れる（Finder から戻せる）。

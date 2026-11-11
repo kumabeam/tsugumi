@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var warnedSilence = false
     private static let silenceWarningAfter: TimeInterval = 5 * 60
     private var hotKey: HotKey?
+    private var libraryKeyMonitor: Any?
     private var lastMeetingNotice = Date.distantPast
 
     // MARK: - 起動と終了
@@ -66,8 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             importFiles: { [weak self] urls in self?.importFiles(urls) },
             willDelete: { [weak self] session in self?.pipeline.discard(folder: session.folder) },
             cancelTranscription: { [weak self] session in self?.pipeline.cancel(folder: session.folder) },
-            chooseFiles: { [weak self] in self?.chooseFiles() }
+            chooseFiles: { [weak self] in self?.chooseFiles() },
+            selectMicrophone: { [weak self] id in
+                Microphones.select(id: id)
+                // 設定ウィンドウを開いていれば、そちらの表示も合わせる
+                self?.settings.refresh()
+            }
         )
+        installLibraryKeys()
         settings.changeBaseFolder = { [weak self] in self?.changeBaseFolder() }
         settings.checkForUpdates = { [weak self] in self?.updater.check() }
         NSApp.mainMenu = Self.makeMainMenu()
@@ -136,6 +143,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc private func openLibrary() {
         showLibrary()
+    }
+
+    /// 録音一覧ウィンドウのキー操作。スペースで再生／一時停止、⌘⌫ で選んでいる録音をゴミ箱へ。
+    /// 文字を打っている最中（タイトル、検索）はどちらも文字入力に任せる。
+    /// SwiftUI の keyboardShortcut だと入力欄のキーまで奪ってしまうので、ここで見る
+    private func installLibraryKeys() {
+        libraryKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard !event.isARepeat, let window = event.window else { return event }
+            let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard let self, window === self.libraryWindow else { return false }
+                let responder = window.firstResponder
+                if responder is NSTextView { return false }
+                switch (Int(event.keyCode), modifiers) {
+                case (kVK_Space, []):
+                    guard self.library.player.isAvailable, !(responder is NSButton) else { return false }
+                    // キーボードでボタンを選べる設定のときは、ボタンの「押す」をスペースに残す
+                    if NSApp.isFullKeyboardAccessEnabled, !(responder === window || responder is NSTableView) { return false }
+                    self.library.player.togglePlayback()
+                    return true
+                case (kVK_Delete, [.command]):
+                    self.library.requestDeleteSelection()
+                    return true
+                default:
+                    return false
+                }
+            }
+            return handled ? nil : event
+        }
     }
 
     // MARK: - 設定ウィンドウ（⌘,）
