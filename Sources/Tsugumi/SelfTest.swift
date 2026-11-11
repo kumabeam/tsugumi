@@ -110,15 +110,19 @@ enum SelfTest {
         let running = try makeRecording(startedAt: Date().addingTimeInterval(-120), seconds: 60)
         let queued = try makeRecording(startedAt: Date(), seconds: 3)
 
+        guard WhisperTools.isReady else {
+            print("NG   文字起こしの中止 … モデルが無いので確かめられません")
+            return false
+        }
         let pipeline = Pipeline()
         pipeline.enqueue(running)
         pipeline.enqueue(queued)
         // 順番待ちの方を先に外す
         pipeline.cancel(folder: queued.folder)
-        // whisper が動き出すのを待ってから止める
+        // whisper が実際に動き出してから止める（準備中の中止は別の経路）
         var waited = 0
-        while pipeline.current == nil, waited < 50 { try await Task.sleep(for: .milliseconds(100)); waited += 1 }
-        try await Task.sleep(for: .seconds(2))
+        while !pipeline.isTranscribing, waited < 150 { try await Task.sleep(for: .milliseconds(100)); waited += 1 }
+        let started = pipeline.isTranscribing
         pipeline.cancel(folder: running.folder)
         waited = 0
         while pipeline.isBusy, waited < 300 { try await Task.sleep(for: .milliseconds(100)); waited += 1 }
@@ -131,8 +135,8 @@ enum SelfTest {
         }
         let first = check(running)
         let second = check(queued)
-        let passed = first.ok && second.ok && !pipeline.isBusy
-        print("\(passed ? "OK  " : "NG  ") 文字起こしの中止 … 実行中: \(first.detail) / 順番待ち: \(second.detail)")
+        let passed = started && first.ok && second.ok && !pipeline.isBusy
+        print("\(passed ? "OK  " : "NG  ") 文字起こしの中止 … 実行中: \(first.detail)\(started ? "" : "（whisper が始まる前に終わった）") / 順番待ち: \(second.detail)")
         return passed
     }
 

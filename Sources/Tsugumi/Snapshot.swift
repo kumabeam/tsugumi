@@ -24,7 +24,7 @@ enum Snapshot {
         if model.items.indices.contains(index) { model.selection = model.items[index].id }
         if arguments.contains("--recording") {
             model.setRecording(since: Date().addingTimeInterval(-754))
-            model.setLevels(AudioLevels(system: 0.3, mic: 0.02))
+            model.levels.set(AudioLevels(system: 0.3, mic: 0.02))
         }
         if arguments.contains("--model") {
             model.setModelStatus("文字起こしモデルを準備中 42%（1.3 GB / 3.1 GB）", failed: false)

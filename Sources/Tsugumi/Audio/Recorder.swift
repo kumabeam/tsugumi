@@ -2,9 +2,6 @@ import AVFoundation
 import QuartzCore
 import ScreenCaptureKit
 
-/// Mac から出ている音とマイクを同時に録る。
-/// 仮想オーディオデバイスも出力先の切り替えも要らない（ScreenCaptureKit が OS から直接受け取る）。
-/// 内部の状態は専用の直列キューの上でだけ触る（だから @unchecked Sendable）。
 /// 録音中の音量。最大振幅（0〜1）
 struct AudioLevels: Equatable {
     var system: Float = 0
@@ -20,12 +17,18 @@ struct AudioLevels: Equatable {
     }
 }
 
+/// Mac から出ている音とマイクを同時に録る。
+/// 仮想オーディオデバイスも出力先の切り替えも要らない（ScreenCaptureKit が OS から直接受け取る）。
+/// 内部の状態は専用の直列キューの上でだけ触る（だから @unchecked Sendable）。
+/// 例外は system / mic の2つで、start() で一度だけ作ってからは差し替えない（takeLevels が主スレッドから読む）。
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     static let systemFile = "system.wav"
     static let micFile = "mic.wav"
 
     /// 自分で止めていないのに録音が止まったとき（スリープ・権限の取り消しなど）に呼ばれる。
     var onInterrupted: ((Error) -> Void)?
+    /// 最初に書き込みに失敗したとき、主スレッドで1回だけ呼ばれる（録音は続く）。
+    var onWriteError: ((Error) -> Void)?
 
     private let queue = DispatchQueue(label: "io.github.kumabeam.tsugumi.recorder")
     private let discardQueue = DispatchQueue(label: "io.github.kumabeam.tsugumi.recorder.video")
@@ -125,7 +128,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         do {
             try track.append(sampleBuffer, origin: origin, elapsed: now - wallStart)
         } catch {
-            if writeError == nil { writeError = error }
+            if writeError == nil {
+                writeError = error
+                DispatchQueue.main.async { self.onWriteError?(error) }
+            }
         }
     }
 

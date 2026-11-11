@@ -55,12 +55,34 @@ struct WhisperTools {
 
 /// whisper-cli を子プロセスで動かして文字起こしする。音声は Mac の外に出ない。
 final class Transcriber: @unchecked Sendable {
-    private let running = Locked<Process?>(nil)
+    private enum State {
+        case idle
+        case running(Process)
+        /// プロセスが立ち上がる前に中止された。run() が始めずに終わる
+        case cancelRequested
+    }
 
+    private let state = Locked<State>(.idle)
+
+    /// whisper が動いているか
+    var isRunning: Bool {
+        state.withValue { if case .running = $0 { return true } else { return false } }
+    }
+
+    /// 動いていれば止める。まだ始まっていなければ、次の run() を始めさせない
     func cancel() {
-        running.withValue { process in
-            if let process, process.isRunning { process.terminate() }
+        state.withValue { state in
+            if case .running(let process) = state {
+                process.terminate()
+            } else {
+                state = .cancelRequested
+            }
         }
+    }
+
+    /// 前の中止要求を消す。1件ごとに Pipeline が呼ぶ
+    func reset() {
+        state.withValue { $0 = .idle }
     }
 
     /// - Parameter diarize: ステレオ WAV を渡して、左右どちらの声かを判定させる
@@ -96,20 +118,26 @@ final class Transcriber: @unchecked Sendable {
             }
         }
 
-        running.withValue { $0 = process }
         defer {
             errorPipe.fileHandleForReading.readabilityHandler = nil
-            running.withValue { $0 = nil }
+            state.withValue { if case .running = $0 { $0 = .idle } }
         }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            process.terminationHandler = { _ in continuation.resume() }
-            do {
-                try process.run()
-            } catch {
-                process.terminationHandler = nil
-                continuation.resume(throwing: error)
+            // 中止の要求と、プロセスの開始が入れ違わないよう、同じ鍵の中で始める
+            let started: Result<Void, Error> = state.withValue { state in
+                if case .cancelRequested = state { return .failure(CancellationError()) }
+                process.terminationHandler = { _ in continuation.resume() }
+                do {
+                    try process.run()
+                    state = .running(process)
+                    return .success(())
+                } catch {
+                    process.terminationHandler = nil
+                    return .failure(error)
+                }
             }
+            if case .failure(let error) = started { continuation.resume(throwing: error) }
         }
 
         guard process.terminationStatus == 0, let data = try? Data(contentsOf: outputJSON) else {

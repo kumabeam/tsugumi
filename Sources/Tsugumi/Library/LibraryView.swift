@@ -8,7 +8,7 @@ struct LibraryView: View {
     var body: some View {
         NavigationSplitView {
             Sidebar(model: model)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 380)
+                .navigationSplitViewColumnWidth(min: 250, ideal: 270, max: 380)
         } detail: {
             if let item = model.selectedItem {
                 Detail(model: model, player: model.player, item: item)
@@ -189,7 +189,7 @@ private struct RecordBar: View {
                         .lineLimit(1)
                         .fixedSize()
                 }
-                LevelMeters(levels: model.levels)
+                LevelMeters(model: model.levels)
             }
         }
         // 右端の「⋯」と重ならないようにする
@@ -207,12 +207,12 @@ private struct RecordBar: View {
 /// 録音中の音量。相手（Mac から出た音）と自分（マイク）を別々に出す。
 /// 音が届いていないことに、会議の最中に気づくためのもの
 private struct LevelMeters: View {
-    let levels: AudioLevels
+    @ObservedObject var model: LevelsModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            row("相手", levels.system)
-            row("自分", levels.mic)
+            row("相手", model.current.system)
+            row("自分", model.current.mic)
         }
         .fixedSize()
         .help("この1秒間の音量。長く振れないときは、マイクの選択や音の出力先を確認してください")
@@ -228,9 +228,9 @@ private struct LevelMeters: View {
                 Capsule().fill(.quaternary)
                 Capsule()
                     .fill(peak > 0.005 ? Color.green : Color.secondary.opacity(0.4))
-                    .frame(width: max(3, 56 * AudioLevels.meter(peak)))
+                    .frame(width: max(3, 48 * AudioLevels.meter(peak)))
             }
-            .frame(width: 56, height: 6)
+            .frame(width: 48, height: 6)
             .animation(.linear(duration: 0.2), value: peak)
         }
     }

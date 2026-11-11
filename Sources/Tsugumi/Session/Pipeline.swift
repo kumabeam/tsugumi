@@ -34,6 +34,9 @@ final class Pipeline {
         if !running, !waiting.isEmpty { Task { await drain() } }
     }
 
+    /// whisper が動いているか（動作確認用）
+    var isTranscribing: Bool { transcriber.isRunning }
+
     /// 文字起こしの準備（モデル）ができておらず、待っている状態か
     var isWaitingForModel: Bool { !waiting.isEmpty && !running && !WhisperTools.isReady }
 
@@ -90,6 +93,7 @@ final class Pipeline {
             current = session
             progress = 0
             skipping = false
+            transcriber.reset()
             onChange?()
 
             var failure: Error?
@@ -98,10 +102,13 @@ final class Pipeline {
                 session.meta.status = .done
                 session.meta.error = nil
             } catch {
-                if cancelled { break }
+                // 「中止」はアプリ終了より先に見る。終了で break すると保存されず、次回起動で再開してしまう
                 if skipping {
                     session.meta.status = .cancelled
                     session.meta.error = nil
+                    Self.removeIntermediateFiles(in: session.folder)
+                } else if cancelled {
+                    break
                 } else {
                     failure = error
                     session.meta.status = .failed
@@ -162,6 +169,13 @@ final class Pipeline {
         await Task.detached(priority: .utility) {
             Self.archive(prepared, session: finished)
         }.value
+    }
+
+    /// 中止したとき、whisper に渡すために作った音声だけ消す（録音そのものは残す）
+    private nonisolated static func removeIntermediateFiles(in folder: URL) {
+        for name in [whisperInput, "stereo.wav", "import.wav"] {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+        }
     }
 
     // MARK: - 音声の準備

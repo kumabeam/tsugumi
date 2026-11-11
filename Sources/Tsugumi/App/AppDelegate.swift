@@ -259,6 +259,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 try session.save()
                 let recorder = Recorder()
                 recorder.onInterrupted = { [weak self] _ in self?.recordingInterrupted() }
+                recorder.onWriteError = { [weak self] error in
+                    // 止めてから知るのでは遅い（マイクを替えれば残りは録れる）
+                    self?.notifier.notify(title: "録音の一部を書き込めませんでした", body: error.localizedDescription)
+                }
                 do {
                     try await recorder.start(folder: session.folder, microphoneID: Microphones.selected()?.id)
                 } catch {
@@ -285,7 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func recordingTick() {
         if let recorder {
             let levels = recorder.takeLevels()
-            library.setLevels(levels)
+            library.levels.set(levels)
             if levels.hasSound {
                 lastSoundAt = Date()
                 warnedSilence = false
@@ -306,11 +310,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         timer?.invalidate()
         render()
         Task {
-            let writeError = await recorder.stop()
+            // 書き込みエラーは起きた時点で知らせてある（onWriteError）
+            _ = await recorder.stop()
             finishRecording(session)
-            if let writeError {
-                notifier.notify(title: "録音の一部を書き込めませんでした", body: writeError.localizedDescription)
-            }
         }
     }
 
@@ -404,7 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             library.setRecording(since: since)
         } else {
             library.setRecording(since: nil)
-            library.setLevels(AudioLevels())
+            library.levels.set(AudioLevels())
         }
         library.setTranscribing(id: pipeline.current?.folder.path, progress: pipeline.progress)
 
@@ -473,7 +475,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         } else if pipeline.isBusy {
             let rest = pipeline.pendingCount > 1 ? "（残り\(pipeline.pendingCount)件）" : ""
             add("文字起こし中 \(pipeline.progress)%\(rest)", nil)
-            add("文字起こしを中止", #selector(cancelTranscription))
+            if pipeline.current != nil { add("文字起こしを中止", #selector(cancelTranscription)) }
         }
 
         if menu.numberOfItems > 0 { menu.addItem(.separator()) }

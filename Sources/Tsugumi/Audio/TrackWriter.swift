@@ -160,7 +160,10 @@ final class TrackWriter {
         let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
             sampleBuffer, at: 0, frameCount: Int32(frames), into: buffer.mutableAudioBufferList
         )
-        return status == noErr ? buffer : nil
+        guard status == noErr else {
+            throw TsugumiError.message("音声を読み取れません（\(status)／\(describe(asbd))）")
+        }
+        return buffer
     }
 
     /// 3チャンネル以上は配置（レイアウト）を付けないと AVAudioFormat が作れない。

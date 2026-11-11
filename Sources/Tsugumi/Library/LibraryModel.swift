@@ -58,8 +58,8 @@ final class LibraryModel: ObservableObject {
     /// 選んでいる録音の文字起こし
     @Published private(set) var lines: [TranscriptLine] = []
     @Published private(set) var recordingSince: Date?
-    /// 録音中の音量（1秒おきに更新）
-    @Published private(set) var levels = AudioLevels()
+    /// 録音中の音量（1秒おきに更新）。毎秒ウィンドウ全体を描き直さないよう、別のオブジェクトにしてある
+    let levels = LevelsModel()
     @Published private(set) var transcribingID: String?
     @Published private(set) var progress = 0
     /// 文字起こしモデルの準備状況。揃っていれば nil
@@ -130,10 +130,6 @@ final class LibraryModel: ObservableObject {
 
     // MARK: - アプリ本体からの状態
 
-    func setLevels(_ levels: AudioLevels) {
-        if self.levels != levels { self.levels = levels }
-    }
-
     func setRecording(since: Date?) {
         if recordingSince != since { recordingSince = since }
     }
@@ -176,5 +172,15 @@ final class LibraryModel: ObservableObject {
         actions.willDelete(item.session)
         try? FileManager.default.trashItem(at: item.session.folder, resultingItemURL: nil)
         reload()
+    }
+}
+
+/// 録音中の音量。LevelMeters だけが見る
+@MainActor
+final class LevelsModel: ObservableObject {
+    @Published private(set) var current = AudioLevels()
+
+    func set(_ levels: AudioLevels) {
+        if current != levels { current = levels }
     }
 }
