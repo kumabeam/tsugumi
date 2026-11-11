@@ -37,14 +37,24 @@ enum Snapshot {
             model.setTranscribing(id: waiting.id, progress: 42)
         }
 
-        let size = NSSize(width: 980, height: 640)
+        var size = NSSize(width: 980, height: 640)
         let window = SilentWindow(
             contentRect: NSRect(origin: NSPoint(x: -4000, y: -4000), size: size),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
         window.title = "Tsugumi"
-        window.contentViewController = NSHostingController(rootView: LibraryView(model: model))
+        if arguments.contains("--settings") {
+            // 設定ウィンドウを写す
+            let settings = SettingsModel(baseFolder: store.baseFolder)
+            settings.refresh()
+            settings.isRecording = arguments.contains("--recording")
+            let controller = NSHostingController(rootView: SettingsView(model: settings))
+            window.contentViewController = controller
+            size = controller.view.fittingSize
+        } else {
+            window.contentViewController = NSHostingController(rootView: LibraryView(model: model))
+        }
         window.setContentSize(size)
         window.setFrameOrigin(NSPoint(x: -4000, y: -4000))
         window.orderFrontRegardless()

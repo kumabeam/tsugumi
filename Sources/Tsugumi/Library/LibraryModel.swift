@@ -43,8 +43,8 @@ final class LibraryModel: ObservableObject {
         var retryModelDownload: () -> Void = {}
         /// 文字起こしを途中でやめる（順番待ちのものも外す）
         var cancelTranscription: (Session) -> Void = { _ in }
-        /// メニューバーと同じメニューを、ウィンドウの中のボタンから出す
-        var showMenu: (NSView) -> Void = { _ in }
+        /// ファイルを選んで文字起こしする
+        var chooseFiles: () -> Void = {}
     }
 
     @Published private(set) var items: [Item] = []
@@ -71,6 +71,7 @@ final class LibraryModel: ObservableObject {
 
     private let store: SessionStore
     private var loadedKey = ""
+    private var loadedAudioKey = ""
     private var searchCache: [String: String] = [:]
 
     init(store: SessionStore) {
@@ -116,16 +117,33 @@ final class LibraryModel: ObservableObject {
     private func loadSelection() {
         guard let item = selectedItem else {
             loadedKey = ""
+            loadedAudioKey = ""
             lines = []
             player.load(nil)
             return
         }
-        // 同じ録音を同じ状態のまま読み直さない（再生が頭に戻ってしまうため）
+        // 同じ録音を同じ状態のまま読み直さない
         let key = "\(item.id)|\(item.session.meta.status.rawValue)"
-        guard key != loadedKey else { return }
-        loadedKey = key
-        lines = item.session.meta.status == .done ? TranscriptDocument.load(item.session.transcriptURL) : []
-        player.load(item.session.meta.status == .done ? item.session.audioURL : nil)
+        if key != loadedKey {
+            loadedKey = key
+            lines = item.session.meta.status == .done ? TranscriptDocument.load(item.session.transcriptURL) : []
+        }
+        loadAudioIfNeeded(for: item)
+    }
+
+    /// 音声は、聞き返し用のファイルができていれば文字起こしの途中でも読む。
+    /// 同じファイルを読み直さない（再生が頭に戻ってしまうため）
+    private func loadAudioIfNeeded(for item: Item) {
+        let audio = Self.playableAudio(of: item.session)
+        let key = "\(item.id)|\(audio?.path ?? "")"
+        guard key != loadedAudioKey else { return }
+        loadedAudioKey = key
+        player.load(audio)
+    }
+
+    /// 再生できる音声。録音中は無い
+    static func playableAudio(of session: Session) -> URL? {
+        session.meta.status == .recording ? nil : session.audioURL
     }
 
     // MARK: - アプリ本体からの状態
@@ -142,6 +160,8 @@ final class LibraryModel: ObservableObject {
     func setTranscribing(id: String?, progress: Int) {
         if transcribingID != id { transcribingID = id }
         if self.progress != progress { self.progress = progress }
+        // 文字起こしの途中で聞き返し用の音声ができたら、その時点で再生できるようにする
+        if let item = selectedItem, item.id == id { loadAudioIfNeeded(for: item) }
     }
 
     // MARK: - 操作

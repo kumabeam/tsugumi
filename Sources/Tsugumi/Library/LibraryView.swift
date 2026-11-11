@@ -4,24 +4,57 @@ import UniformTypeIdentifiers
 /// 録音一覧ウィンドウ。左に一覧、右に文字起こしと再生。
 struct LibraryView: View {
     @ObservedObject var model: LibraryModel
+    @State private var dropTargeted = false
 
     var body: some View {
-        NavigationSplitView {
+        // NavigationSplitView はタイトルバーにサイドバー開閉ボタンを作るので、素の分割ビューを使う
+        HSplitView {
             Sidebar(model: model)
-                .navigationSplitViewColumnWidth(min: 250, ideal: 270, max: 380)
-        } detail: {
-            if let item = model.selectedItem {
-                Detail(model: model, player: model.player, item: item)
-                    .id(item.id)
-            } else {
-                ContentUnavailableView {
-                    Label("録音がありません", systemImage: "waveform")
-                } description: {
-                    Text("左下の赤いボタンで録音を始めます。\n音声や動画のファイルを一覧にドロップしても文字起こしできます。")
+                .frame(minWidth: 250, idealWidth: 270, maxWidth: 380)
+            Group {
+                if let item = model.selectedItem {
+                    Detail(model: model, player: model.player, item: item)
+                        .id(item.id)
+                } else {
+                    ContentUnavailableView {
+                        Label("録音がありません", systemImage: "waveform")
+                    } description: {
+                        Text("左下の赤いボタンで録音を始めます。\n音声や動画のファイルをこのウィンドウにドロップしても文字起こしできます。")
+                    }
                 }
             }
+            .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 760, minHeight: 480)
+        // ウィンドウのどこに落としても文字起こしする
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            // 全部そろってから1回で渡す（対応していないファイルの警告を1つにまとめるため）
+            let collected = Locked<[URL]>([])
+            let group = DispatchGroup()
+            for provider in providers {
+                group.enter()
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    if let url { collected.withValue { $0.append(url) } }
+                    group.leave()
+                }
+            }
+            group.notify(queue: .main) {
+                let urls = collected.withValue { $0 }
+                if !urls.isEmpty { model.actions.importFiles(urls) }
+            }
+            return true
+        }
+        .overlay {
+            if dropTargeted {
+                ZStack {
+                    Rectangle().fill(.background.opacity(0.85))
+                    Label("ここに落とすと文字起こしします", systemImage: "doc.badge.plus")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+                .allowsHitTesting(false)
+            }
+        }
     }
 }
 
@@ -37,6 +70,7 @@ private struct Sidebar: View {
             List(model.filtered, selection: $model.selection) { item in
                 Row(item: item, transcribingProgress: model.transcribingID == item.id ? model.progress : nil)
             }
+            .listStyle(.sidebar)
             .overlay {
                 if model.filtered.isEmpty, !model.search.isEmpty {
                     Text("見つかりません").foregroundStyle(.secondary)
@@ -48,15 +82,6 @@ private struct Sidebar: View {
             }
             Divider()
             RecordBar(model: model)
-        }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            for provider in providers {
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    Task { @MainActor in model.actions.importFiles([url]) }
-                }
-            }
-            return true
         }
     }
 
@@ -192,14 +217,19 @@ private struct RecordBar: View {
                 LevelMeters(model: model.levels)
             }
         }
-        // 右端の「⋯」と重ならないようにする
+        // 右端のボタンと重ならないようにする
         .padding(.trailing, 32)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
         .overlay(alignment: .trailing) {
-            MenuButton(action: model.actions.showMenu)
-                .help("メニュー（メニューバーのアイコンと同じ操作）")
-                .padding(.trailing, 12)
+            Button(action: model.actions.chooseFiles) {
+                Image(systemName: "doc.badge.plus")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("ファイルから文字起こし…（ウィンドウにドロップしてもよい）")
+            .padding(.trailing, 12)
         }
     }
 }
@@ -233,36 +263,6 @@ private struct LevelMeters: View {
             .frame(width: 48, height: 6)
             .animation(.linear(duration: 0.2), value: peak)
         }
-    }
-}
-
-/// 「⋯」ボタン。押すとメニューバーと同じメニューがその場に出る。
-/// メニューを出す位置に AppKit のビューが要るので、SwiftUI の Button ではなく NSButton を使う
-private struct MenuButton: NSViewRepresentable {
-    let action: (NSView) -> Void
-
-    func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(image: NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "メニュー")!,
-                              target: context.coordinator, action: #selector(Coordinator.pressed(_:)))
-        button.bezelStyle = .accessoryBarAction
-        button.isBordered = false
-        button.symbolConfiguration = .init(pointSize: 20, weight: .regular)
-        button.contentTintColor = .secondaryLabelColor
-        button.imageScaling = .scaleProportionallyUpOrDown
-        button.setContentHuggingPriority(.required, for: .horizontal)
-        return button
-    }
-
-    func updateNSView(_ button: NSButton, context: Context) {
-        context.coordinator.action = action
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
-
-    final class Coordinator: NSObject {
-        var action: (NSView) -> Void
-        init(action: @escaping (NSView) -> Void) { self.action = action }
-        @objc func pressed(_ sender: NSButton) { action(sender) }
     }
 }
 
@@ -300,7 +300,7 @@ private struct Detail: View {
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if item.session.meta.status == .done {
+            if LibraryModel.playableAudio(of: item.session) != nil {
                 Divider()
                 PlayerBar(player: player)
             }

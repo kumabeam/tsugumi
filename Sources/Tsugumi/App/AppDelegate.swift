@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private let micMonitor = MicActivityMonitor()
     private lazy var library = LibraryModel(store: store)
     private var libraryWindow: NSWindow?
+    private lazy var settings = SettingsModel(baseFolder: store.baseFolder)
+    private var settingsWindow: NSWindow?
 
     private var statusItem: NSStatusItem!
     private var recorder: Recorder?
@@ -64,8 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             importFiles: { [weak self] urls in self?.importFiles(urls) },
             willDelete: { [weak self] session in self?.pipeline.discard(folder: session.folder) },
             cancelTranscription: { [weak self] session in self?.pipeline.cancel(folder: session.folder) },
-            showMenu: { [weak self] anchor in self?.popUpMenu(from: anchor) }
+            chooseFiles: { [weak self] in self?.chooseFiles() }
         )
+        settings.changeBaseFolder = { [weak self] in self?.changeBaseFolder() }
+        settings.checkForUpdates = { [weak self] in self?.updater.check() }
         NSApp.mainMenu = Self.makeMainMenu()
         // Dock と ⌘Tab に出るアイコンを明示する。起動後に「普通のアプリ」へ切り替える作りだと、
         // macOS が古い（アイコン無しの頃の）絵を使い続けることがあるため
@@ -134,21 +138,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         showLibrary()
     }
 
-    /// ウィンドウの「⋯」ボタン用。メニューバーが隠れている（ノッチ、全画面）ときの入り口
-    private lazy var windowMenu: NSMenu = {
-        let menu = NSMenu()
-        menu.delegate = self
-        return menu
-    }()
+    // MARK: - 設定ウィンドウ（⌘,）
 
-    private func popUpMenu(from anchor: NSView) {
-        windowMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
+    @objc private func showSettings() {
+        if settingsWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+                styleMask: [.titled, .closable],
+                backing: .buffered, defer: false
+            )
+            window.title = "設定"
+            window.contentViewController = NSHostingController(rootView: SettingsView(model: settings))
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            window.setFrameAutosaveName("Settings")
+            settingsWindow = window
+        }
+        settings.refresh()
+        NSApp.setActivationPolicy(.regular)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func windowWillClose(_ notification: Notification) {
-        library.player.pause()
-        // 閉じたらメニューバーだけの常駐に戻る
-        NSApp.setActivationPolicy(.accessory)
+        let closing = notification.object as? NSWindow
+        if closing === libraryWindow { library.player.pause() }
+        // 自分のウィンドウが全部閉じたら、メニューバーだけの常駐に戻る
+        let stillOpen = [libraryWindow, settingsWindow].contains { window in
+            guard let window, window !== closing else { return false }
+            return window.isVisible || window.isMiniaturized
+        }
+        if !stillOpen { NSApp.setActivationPolicy(.accessory) }
     }
 
     /// コピー＆ペーストや ⌘W など、標準のキー操作を効かせるためのメニュー。
@@ -172,6 +193,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         submenu("Tsugumi", [
             ("アップデートを確認…", #selector(checkForUpdates), "", []),
+            nil,
+            ("設定…", #selector(showSettings), ",", .command),
+            nil,
             ("Tsugumi を終了", #selector(NSApplication.terminate(_:)), "q", .command),
         ])
         submenu("編集", [
@@ -402,6 +426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     // MARK: - メニューバーの表示
 
     private func render() {
+        if case .idle = state { settings.isRecording = false } else { settings.isRecording = true }
         if case .recording(_, let since) = state {
             library.setRecording(since: since)
         } else {
@@ -454,20 +479,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             menu.addItem(item)
         }
 
-        // ウィンドウの「⋯」からは、ウィンドウ上に既にあるもの（録音ボタン、左上メニューのアップデート確認、終了）を省く
-        let inStatusBar = menu === statusItem.menu
-        if inStatusBar {
-            switch state {
-            case .recording(_, let since):
-                add("録音中 \(Self.clock(Date().timeIntervalSince(since)))", nil)
-                add("録音を停止", #selector(toggleRecording), key: "r")
-            case .starting:
-                add("録音を準備中…", nil)
-            case .stopping:
-                add("録音を保存中…", nil)
-            case .idle:
-                add("録音を開始", #selector(toggleRecording), key: "r")
-            }
+        switch state {
+        case .recording(_, let since):
+            add("録音中 \(Self.clock(Date().timeIntervalSince(since)))", nil)
+            add("録音を停止", #selector(toggleRecording), key: "r")
+        case .starting:
+            add("録音を準備中…", nil)
+        case .stopping:
+            add("録音を保存中…", nil)
+        case .idle:
+            add("録音を開始", #selector(toggleRecording), key: "r")
         }
         if let modelText = models.progressText {
             add(modelText, nil)
@@ -478,52 +499,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             if pipeline.current != nil { add("文字起こしを中止", #selector(cancelTranscription)) }
         }
 
-        if menu.numberOfItems > 0 { menu.addItem(.separator()) }
-        if inStatusBar { add("録音一覧を開く", #selector(openLibrary)) }
+        menu.addItem(.separator())
+        add("録音一覧を開く", #selector(openLibrary))
         add("ファイルから文字起こし…", #selector(chooseFiles))
-        add("保存フォルダを開く", #selector(openBaseFolder))
         let failed = store.sessions(with: [.failed]).count
         if failed > 0 {
             add("失敗した文字起こしをやり直す（\(failed)件）", #selector(retryFailed))
         }
 
         menu.addItem(.separator())
-        menu.addItem(microphoneMenuItem())
-        add("会議の開始を検知して知らせる", #selector(toggleDetection),
-            checked: UserDefaults.standard.bool(forKey: Self.detectKey))
-        add("保存先を変更…", #selector(changeBaseFolder))
-
-        guard inStatusBar else { return }
-        menu.addItem(.separator())
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-        add("アップデートを確認…（今は \(version)）", updater.canCheck ? #selector(checkForUpdates) : nil)
+        add("設定…", #selector(showSettings))
         add("Tsugumi を終了", #selector(quit))
-    }
-
-    /// 「マイク: ◯◯」の行。サブメニューで選び直せる（録音中は変更できない）。
-    private func microphoneMenuItem() -> NSMenuItem {
-        let item = NSMenuItem(title: "マイク: \(Microphones.current()?.name ?? "見つかりません")", action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
-        let selected = Microphones.selected()
-        var canChange = false
-        if case .idle = state { canChange = true }
-
-        func add(_ title: String, id: String?, checked: Bool) {
-            let choice = NSMenuItem(title: title, action: canChange ? #selector(selectMicrophone(_:)) : nil, keyEquivalent: "")
-            choice.target = self
-            choice.representedObject = id
-            choice.state = checked ? .on : .off
-            submenu.addItem(choice)
-        }
-
-        let systemName = Microphones.systemDefault().map { "（\($0.name)）" } ?? ""
-        add("macOS の設定に従う\(systemName)", id: nil, checked: selected == nil)
-        submenu.addItem(.separator())
-        for microphone in Microphones.available() {
-            add(microphone.name, id: microphone.id, checked: selected == microphone)
-        }
-        item.submenu = submenu
-        return item
     }
 
     private static func clock(_ seconds: TimeInterval) -> String {
@@ -533,11 +519,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     // MARK: - メニューの操作
-
-    @objc private func openBaseFolder() {
-        try? FileManager.default.createDirectory(at: store.baseFolder, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(store.baseFolder)
-    }
 
     @objc private func retryModelDownload() {
         models.retry()
@@ -561,15 +542,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         library.reload()
     }
 
-    @objc private func selectMicrophone(_ sender: NSMenuItem) {
-        Microphones.select(id: sender.representedObject as? String)
-    }
-
-    @objc private func toggleDetection() {
-        let defaults = UserDefaults.standard
-        defaults.set(!defaults.bool(forKey: Self.detectKey), forKey: Self.detectKey)
-    }
-
     @objc private func changeBaseFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -578,7 +550,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         panel.directoryURL = store.baseFolder
         panel.message = "録音と文字起こしの保存先を選んでください"
         NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let url = panel.url { store.setBaseFolder(url) }
+        if panel.runModal() == .OK, let url = panel.url {
+            store.setBaseFolder(url)
+            settings.baseFolder = url
+            library.reload()
+        }
     }
 
     @objc private func checkForUpdates() {

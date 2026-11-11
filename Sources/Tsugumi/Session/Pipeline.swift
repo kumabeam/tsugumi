@@ -146,6 +146,14 @@ final class Pipeline {
         }
         session.meta.durationSeconds = duration
 
+        // 聞き返し用の音声は文字起こしの前に作る（文字起こしの間も再生できるように）
+        if skipping { throw CancellationError() }
+        let forListening = session
+        await Task.detached(priority: .utility) {
+            Self.makeListeningCopy(prepared, session: forListening)
+        }.value
+        onChange?()
+
         // 音声の準備中に「中止」が押されていたら、whisper を始めない
         if skipping { throw CancellationError() }
         let segments = try await transcriber.run(wav: prepared.wav, diarize: prepared.diarize, tools: tools) { percent in
@@ -173,7 +181,7 @@ final class Pipeline {
 
     /// 中止したとき、whisper に渡すために作った音声だけ消す（録音そのものは残す）
     private nonisolated static func removeIntermediateFiles(in folder: URL) {
-        for name in [whisperInput, "stereo.wav", "import.wav"] {
+        for name in [whisperInput, "stereo.wav", "mix.wav", "import.wav"] {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
         }
     }
@@ -252,45 +260,64 @@ final class Pipeline {
         )
     }
 
-    /// 文字起こしが済んだら、録音は聞き返し用の m4a にして作業用の WAV を消す。
-    private nonisolated static func archive(_ prepared: Prepared, session: Session) {
-        let files = FileManager.default
+    /// 録音を聞き返し用の m4a（audio.m4a）にする。取り込みは元のファイルを再生するので何もしない。
+    private nonisolated static func makeListeningCopy(_ prepared: Prepared, session: Session) {
+        guard session.meta.source == .recording else { return }
         let folder = session.folder
-        let source = session.meta.source
-        // 作業用の WAV を消す処理なので、別の録音のフォルダになっていたら何もしない
         guard isSameRecording(session, allowing: [.recorded]) else { return }
-        let workFiles = [Recorder.systemFile, Recorder.micFile, "stereo.wav", "mix.wav", "import.wav", whisperInput]
-            .map { folder.appendingPathComponent($0) }
+        let files = FileManager.default
+        let audio = folder.appendingPathComponent(Session.audioFile)
 
-        if source == .recording {
-            // 相手と自分を混ぜて、両耳から普通に聞こえる1本にする
-            guard var listening = prepared.tracks.first else { return }
-            if prepared.tracks.count == 2 {
-                let mix = folder.appendingPathComponent("mix.wav")
-                do {
-                    try Wav.mix(prepared.tracks[0], prepared.tracks[1], to: mix)
-                    listening = mix
-                } catch {
-                    return
-                }
-            }
+        // やり直しのとき、録音より新しい m4a が既にあれば作り直さない（再生中のファイルを消さない）
+        func modified(_ url: URL) -> Date {
+            (try? files.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
+        }
+        if Wav.fileSize(audio) > 0, prepared.tracks.allSatisfy({ modified(audio) >= modified($0) }) { return }
 
-            let audio = folder.appendingPathComponent(Session.audioFile)
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-            process.arguments = ["-f", "m4af", "-d", "aac", "-b", "80000", listening.path, audio.path]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
+        // 相手と自分を混ぜて、両耳から普通に聞こえる1本にする
+        guard var listening = prepared.tracks.first else { return }
+        let mix = folder.appendingPathComponent("mix.wav")
+        defer { try? files.removeItem(at: mix) }
+        if prepared.tracks.count == 2 {
             do {
-                try process.run()
-                process.waitUntilExit()
+                try Wav.mix(prepared.tracks[0], prepared.tracks[1], to: mix)
+                listening = mix
             } catch {
                 return
             }
-            // 変換できなかったときは WAV を残す（音声を失わない）
-            guard process.terminationStatus == 0, Wav.fileSize(audio) > 0 else { return }
         }
+
+        let temporary = folder.appendingPathComponent("audio-tmp.m4a")
+        try? files.removeItem(at: temporary)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        process.arguments = ["-f", "m4af", "-d", "aac", "-b", "80000", listening.path, temporary.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return
+        }
+        // 途中のファイルを再生させないよう、できあがってから本来の名前にする
+        guard process.terminationStatus == 0, Wav.fileSize(temporary) > 0 else {
+            try? FileManager.default.removeItem(at: temporary)
+            return
+        }
+        try? FileManager.default.removeItem(at: audio)
+        try? FileManager.default.moveItem(at: temporary, to: audio)
+    }
+
+    /// 文字起こしが済んだら作業用の WAV を消す。聞き返し用の m4a ができていなければ残す（音声を失わない）。
+    private nonisolated static func archive(_ prepared: Prepared, session: Session) {
+        let folder = session.folder
+        // 作業用の WAV を消す処理なので、別の録音のフォルダになっていたら何もしない
         guard isSameRecording(session, allowing: [.recorded]) else { return }
-        for file in workFiles { try? files.removeItem(at: file) }
+        if session.meta.source == .recording {
+            guard Wav.fileSize(folder.appendingPathComponent(Session.audioFile)) > 0 else { return }
+        }
+        let workFiles = [Recorder.systemFile, Recorder.micFile, "stereo.wav", "mix.wav", "import.wav", whisperInput]
+        for name in workFiles { try? FileManager.default.removeItem(at: folder.appendingPathComponent(name)) }
     }
 }
