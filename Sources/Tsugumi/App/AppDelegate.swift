@@ -1,4 +1,5 @@
 import AppKit
+import os
 import AVFoundation
 import Carbon.HIToolbox
 import SwiftUI
@@ -14,6 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     private static let detectKey = "detectMeetings"
+    /// 録音が終わったら自動で文字起こしを始めるか。初期値はオフ（自分の都合のいいときに始める）
+    private static let autoTranscribeKey = "autoTranscribe"
+    private var autoTranscribe: Bool { UserDefaults.standard.bool(forKey: Self.autoTranscribeKey) }
+    /// 終了時に処理中・順番待ちだった録音。次回起動時にそこだけ再開する
+    private static let queuedKey = "queuedFolders"
+    private var savedQueue: Set<String> = []
 
     private let store = SessionStore()
     private let pipeline = Pipeline()
@@ -36,12 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private static let silenceWarningAfter: TimeInterval = 5 * 60
     private var hotKey: HotKey?
     private var libraryKeyMonitor: Any?
+    private static let screenCaptureAskedKey = "screenCaptureAsked"
     private var lastMeetingNotice = Date.distantPast
 
     // MARK: - 起動と終了
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        UserDefaults.standard.register(defaults: [Self.detectKey: true])
+        UserDefaults.standard.register(defaults: [Self.detectKey: true, Self.autoTranscribeKey: false])
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
@@ -72,7 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 Microphones.select(id: id)
                 // 設定ウィンドウを開いていれば、そちらの表示も合わせる
                 self?.settings.refresh()
-            }
+            },
+            transcribe: { [weak self] session in self?.retry(session) }
         )
         installLibraryKeys()
         settings.changeBaseFolder = { [weak self] in self?.changeBaseFolder() }
@@ -90,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         hotKey = HotKey(keyCode: kVK_ANSI_R, modifiers: controlKey | optionKey | cmdKey) { [weak self] in
             self?.toggleRecording()
         }
-        micMonitor.onChange = { [weak self] inUse in self?.micActivityChanged(inUse) }
+        micMonitor.onChange = { [weak self] started in self?.micActivityChanged(started) }
         micMonitor.start()
 
         models.onChange = { [weak self] in self?.modelStateChanged() }
@@ -269,14 +278,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     /// 前回、録音中や文字起こし中に終わってしまった分を拾い直す。
     private func resumeUnfinished() {
         var crashed = false
+        let queuedBefore = Set(UserDefaults.standard.stringArray(forKey: Self.queuedKey) ?? [])
         for var session in store.sessions(with: [.recording, .recorded]) {
             if session.meta.status == .recording { crashed = true }
             session.meta.status = .recorded
             try? session.save()
-            pipeline.enqueue(session)
+            // 自動のときは全部。手動のときは、前回頼んであったものだけ
+            if autoTranscribe || queuedBefore.contains(session.folder.path) {
+                pipeline.enqueue(session)
+            } else {
+                pipeline.makeListeningCopy(for: session)
+            }
         }
         if crashed {
-            notifier.notify(title: "前回の録音が途中で終わっていました", body: "残っていた音声を文字起こししています。")
+            notifier.notify(
+                title: "前回の録音が途中で終わっていました",
+                body: autoTranscribe ? "残っていた音声を文字起こししています。" : "残っていた音声は一覧にあります。"
+            )
         }
     }
 
@@ -293,11 +311,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func startRecording() {
         guard case .idle = state else { return }
         guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
-            showAlert(
-                title: "「画面収録とシステムオーディオ録音」の許可が必要です",
-                message: "Mac から出る音を録るために使います（画面は記録しません）。\n\nシステム設定 > プライバシーとセキュリティ > 画面収録とシステムオーディオ録音 で Tsugumi をオンにしてから、Tsugumi を起動し直してください。"
-            )
+            // 先にこちらの説明を出し、閉じてから macOS の許可画面を出す。
+            // 同時に出すと macOS の画面がこちらの裏に隠れ、こちらをクリックした拍子に最背面へ行ってしまう
+            // macOS の許可画面は最初の1回しか出ない。2回目以降はシステム設定へ案内する
+            let askedBefore = UserDefaults.standard.bool(forKey: Self.screenCaptureAskedKey)
+            let alert = NSAlert()
+            alert.messageText = "「画面収録とシステムオーディオ録音」の許可が必要です"
+            alert.informativeText = askedBefore
+                ? "Mac から出る音を録るために使います。画面は記録しません。\n\nシステム設定 > プライバシーとセキュリティ > 画面収録とシステムオーディオ録音 で Tsugumi をオンにして、Tsugumi を起動し直してください。"
+                : "Mac から出る音を録るために使います。画面は記録しません。\n\nOK を押すと macOS の許可画面が出ます。許可したら Tsugumi を起動し直してください。"
+            alert.addButton(withTitle: askedBefore ? "システム設定を開く" : "OK")
+            alert.addButton(withTitle: askedBefore ? "キャンセル" : "システム設定を開く")
+            NSApp.activate(ignoringOtherApps: true)
+            let response = alert.runModal()
+            let openSettings = askedBefore ? response == .alertFirstButtonReturn : response == .alertSecondButtonReturn
+            if openSettings {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                    NSWorkspace.shared.open(url)
+                }
+            } else if !askedBefore {
+                UserDefaults.standard.set(true, forKey: Self.screenCaptureAskedKey)
+                CGRequestScreenCaptureAccess()
+            }
             return
         }
 
@@ -390,7 +425,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         session.meta.status = .recorded
         try? session.save()
         state = .idle
-        pipeline.enqueue(session)
+        if autoTranscribe {
+            pipeline.enqueue(session)
+        } else {
+            // 文字起こしは後回しでも、すぐ聞き返せるようにする
+            pipeline.makeListeningCopy(for: session)
+        }
         library.reload()
         render()
     }
@@ -418,7 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             let created = (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? Date()
             do {
                 let session = try store.create(source: .imported, startedAt: created, originalFile: url)
-                pipeline.enqueue(session)
+                if autoTranscribe { pipeline.enqueue(session) }
             } catch {
                 showAlert(title: "取り込めませんでした", message: error.localizedDescription)
             }
@@ -447,14 +487,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     // MARK: - 会議の検知
 
-    private func micActivityChanged(_ inUse: Bool) {
-        guard inUse, UserDefaults.standard.bool(forKey: Self.detectKey), case .idle = state else { return }
+    /// - Parameter started: 新しくマイクを使い始めたアプリの pid
+    private func micActivityChanged(_ started: Set<pid_t>) {
+        let log = Logger(subsystem: "io.github.kumabeam.tsugumi", category: "meeting")
+        guard !started.isEmpty else { return }
+        guard UserDefaults.standard.bool(forKey: Self.detectKey) else { log.notice("検知はオフ"); return }
+        guard case .idle = state else { log.notice("録音中なので無視"); return }
         Task {
-            // 音声入力など一瞬だけの使用で通知しないよう、少し待って確かめる
+            // 音声入力など一瞬だけの使用で通知しないよう、少し待って、同じアプリがまだ使っているか確かめる
             try? await Task.sleep(for: .seconds(3))
-            guard micMonitor.isMicInUse, case .idle = state,
-                  Date().timeIntervalSince(lastMeetingNotice) > 60 else { return }
+            guard micMonitor.isUsingInput(started) else { log.notice("3秒以内に使い終わったので無視"); return }
+            guard case .idle = state else { log.notice("録音が始まっていたので無視"); return }
+            guard Date().timeIntervalSince(lastMeetingNotice) > 60 else { log.notice("前の通知から60秒以内なので無視"); return }
             lastMeetingNotice = Date()
+            log.notice("会議の開始を通知")
             notifier.notifyMeetingDetected()
         }
     }
@@ -470,6 +516,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             library.levels.set(AudioLevels())
         }
         library.setTranscribing(id: pipeline.current?.folder.path, progress: pipeline.progress)
+        var queued = Set(pipeline.waiting.map(\.folder.path))
+        if let current = pipeline.current { queued.insert(current.folder.path) }
+        library.setQueued(queued)
+        if queued != savedQueue {
+            savedQueue = queued
+            UserDefaults.standard.set(Array(queued).sorted(), forKey: Self.queuedKey)
+        }
 
         guard let button = statusItem.button else { return }
         var symbol = "waveform"
@@ -538,6 +591,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(.separator())
         add("録音一覧を開く", #selector(openLibrary))
         add("ファイルから文字起こし…", #selector(chooseFiles))
+        let pending = pendingSessions().count
+        if pending > 0 {
+            add("未処理の文字起こしを始める（\(pending)件）", #selector(transcribePending))
+        }
         let failed = store.sessions(with: [.failed]).count
         if failed > 0 {
             add("失敗した文字起こしをやり直す（\(failed)件）", #selector(retryFailed))
@@ -569,7 +626,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         store.sessions(with: [.failed]).forEach(retry)
     }
 
+    /// 録音は終わっているが、文字起こしをまだ頼んでいないもの
+    private func pendingSessions() -> [Session] {
+        store.sessions(with: [.recorded]).filter { !pipeline.isQueued(folder: $0.folder) }
+    }
+
+    @objc private func transcribePending() {
+        pendingSessions().forEach(retry)
+    }
+
     private func retry(_ failed: Session) {
+        // すでに処理中か順番待ちなら二重に入れない
+        guard !pipeline.isQueued(folder: failed.folder) else { return }
         var session = failed
         session.meta.status = .recorded
         session.meta.error = nil

@@ -92,5 +92,5 @@ ScreenCaptureKit ─┬─ Mac から出た音 ─→ system.wav ─┐
 .build/release/Tsugumi record <秒数> <出力フォルダ>     # 実行元のターミナルに画面収録とマイクの許可が要る
 .build/release/Tsugumi selftest <出力フォルダ>        # 合成した音で変換と時間合わせ、待ち行列の安全を確かめる
 .build/release/Tsugumi fetch-model <保存フォルダ>      # 初回起動と同じモデルのダウンロードを試す（約3GB）
-.build/release/Tsugumi snapshot <保存フォルダ> <出力.png> [番号] [--recording] [--model] [--find <語>] [--settings]
+.build/release/Tsugumi snapshot <保存フォルダ> <出力.png> [番号] [--recording] [--model] [--find <語>] [--settings] [--pending]
 ```

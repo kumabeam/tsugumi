@@ -17,11 +17,7 @@ struct LibraryView: View {
                     // ここで .id(item.id) を付けると分割ビューの子が作り直され、サイドバーの幅が元に戻ってしまう
                     Detail(model: model, player: model.player, item: item)
                 } else {
-                    ContentUnavailableView {
-                        Label("録音がありません", systemImage: "waveform")
-                    } description: {
-                        Text("左下の赤いボタンで録音を始めます。\n音声や動画のファイルをこのウィンドウにドロップしても文字起こしできます。")
-                    }
+                    ContentUnavailableView("録音がありません", systemImage: "waveform")
                 }
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
@@ -49,8 +45,8 @@ struct LibraryView: View {
             if dropTargeted {
                 ZStack {
                     Rectangle().fill(.background.opacity(0.85))
-                    Label("ここに落とすと文字起こしします", systemImage: "doc.badge.plus")
-                        .font(.title2)
+                    Image(systemName: "doc.badge.plus")
+                        .font(.system(size: 40))
                         .foregroundStyle(.secondary)
                 }
                 .allowsHitTesting(false)
@@ -74,6 +70,7 @@ private struct Sidebar: View {
                 Row(
                     item: item,
                     transcribingProgress: model.transcribingID == item.id ? model.progress : nil,
+                    isPending: model.isPending(item),
                     isEditing: editingID == item.id,
                     rename: { model.rename(item, to: $0) },
                     endEditing: { editingID = nil }
@@ -83,6 +80,9 @@ private struct Sidebar: View {
             // 右クリックとダブルクリック。行の中に onTapGesture を置くと1クリックの選択を邪魔するので、List に付ける
             .contextMenu(forSelectionType: String.self) { ids in
                 if let item = model.items.first(where: { $0.id == ids.first }) {
+                    if model.isPending(item) {
+                        Button("文字起こし") { model.actions.transcribe(item.session) }
+                    }
                     Button("名前を変更") { editingID = item.id }
                     Button("ゴミ箱に入れる") { model.pendingDelete = item }
                         .disabled(!model.canDelete(item))
@@ -99,8 +99,6 @@ private struct Sidebar: View {
             ) { item in
                 Button("ゴミ箱に入れる", role: .destructive) { model.moveToTrash(item) }
                 Button("キャンセル", role: .cancel) {}
-            } message: { _ in
-                Text("録音と文字起こしがゴミ箱に移動します。Finder のゴミ箱から戻せます。")
             }
             .overlay {
                 if model.filtered.isEmpty, !model.search.isEmpty {
@@ -136,7 +134,6 @@ private struct Sidebar: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("検索を消す")
             }
         }
         .padding(.horizontal, 8)
@@ -151,6 +148,8 @@ private struct Row: View {
     let item: LibraryModel.Item
     /// 文字起こし中なら進み具合（%）
     let transcribingProgress: Int?
+    /// 録音は終わっているが、文字起こしをまだ頼んでいない
+    let isPending: Bool
     /// ダブルクリックされて、タイトルを打ち直している最中か
     let isEditing: Bool
     /// タイトルを打ち直したとき
@@ -180,7 +179,6 @@ private struct Row: View {
                 Text(item.title)
                     .fontWeight(.semibold)
                     .lineLimit(1)
-                    .help("ダブルクリックで名前を変える")
             }
             HStack {
                 Text(item.dateText)
@@ -208,6 +206,8 @@ private struct Row: View {
         case .recorded:
             if let transcribingProgress {
                 Text("文字起こし \(transcribingProgress)%")
+            } else if isPending {
+                Text("文字起こし前").fontWeight(.semibold).foregroundStyle(.orange)
             } else {
                 Text("順番待ち")
             }
@@ -239,9 +239,6 @@ private struct ModelBanner: View {
             }
             if failed {
                 Button("やり直す", action: retry).controlSize(.small)
-            } else {
-                Text("録音はこの間もできます。文字起こしは準備が済んでから始まります。")
-                    .font(.caption2).foregroundStyle(.tertiary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -268,7 +265,6 @@ private struct RecordBar: View {
                 }
             }
             .buttonStyle(.plain)
-            .help(model.recordingSince == nil ? "録音を開始（⌃⌥⌘R）" : "録音を停止（⌃⌥⌘R）")
 
             if let since = model.recordingSince {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -295,14 +291,13 @@ private struct RecordBar: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help("ファイルから文字起こし…（ウィンドウにドロップしてもよい）")
             .padding(.trailing, 12)
         }
     }
 
     /// 使うマイクの切り替え。設定（⌘,）と同じ内容を、録音を始める場所から直接選べるようにする
     private var microphoneMenu: some View {
-        UpwardMenu(help: "マイクを選ぶ", items: microphoneItems) {
+        UpwardMenu(name: "マイク", items: microphoneItems) {
             HStack(spacing: 3) {
                 Image(systemName: "mic").font(.system(size: 17))
                 Image(systemName: "chevron.up").font(.caption2.weight(.semibold))
@@ -348,7 +343,6 @@ private struct LevelMeters: View {
             row("自分", model.current.mic)
         }
         .fixedSize()
-        .help("この1秒間の音量。長く振れないときは、マイクの選択や音の出力先を確認してください")
     }
 
     private func row(_ label: String, _ peak: Float) -> some View {
@@ -444,8 +438,6 @@ private struct Detail: View {
         .confirmationDialog("「\(item.title)」をゴミ箱に入れますか？", isPresented: $confirmingDelete) {
             Button("ゴミ箱に入れる", role: .destructive) { model.moveToTrash(item) }
             Button("キャンセル", role: .cancel) {}
-        } message: {
-            Text("録音と文字起こしがゴミ箱に移動します。Finder のゴミ箱から戻せます。")
         }
     }
 
@@ -500,10 +492,8 @@ private struct Detail: View {
                     .foregroundStyle(.secondary)
             }
             Button { step(-1) } label: { Image(systemName: "chevron.up") }
-                .help("前へ（⇧⌘G）")
                 .disabled(found.isEmpty)
             Button { step(1) } label: { Image(systemName: "chevron.down") }
-                .help("次へ（⌘G）")
                 .disabled(found.isEmpty)
             Button("完了") { closeFind() }
                 .keyboardShortcut(.cancelAction)
@@ -550,23 +540,24 @@ private struct Detail: View {
                     }
                 } label: {
                     Label(copied ? "コピーしました" : "文字起こしをコピー", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .frame(minWidth: 150)
                 }
+                .buttonStyle(.borderedProminent)
             }
             Button {
                 model.revealInFinder(item)
             } label: {
-                Image(systemName: "folder")
+                Image(systemName: "folder").frame(minWidth: 24)
             }
-            .help("Finder で表示")
 
             Button {
                 confirmingDelete = true
             } label: {
-                Image(systemName: "trash")
+                Image(systemName: "trash").frame(minWidth: 24)
             }
-            .help("ゴミ箱に入れる（⌘⌫）")
             .disabled(!model.canDelete(item))
         }
+        .controlSize(.large)
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
     }
@@ -593,25 +584,37 @@ private struct Detail: View {
         case .recording:
             VStack(spacing: 10) {
                 Image(systemName: "record.circle.fill").font(.largeTitle).foregroundStyle(.red)
-                Text("録音中です。止めると文字起こしが始まります。").foregroundStyle(.secondary)
+                Text("録音中").foregroundStyle(.secondary)
             }
         case .recorded:
             VStack(spacing: 10) {
-                if model.transcribingID == item.id {
-                    ProgressView(value: Double(model.progress), total: 100).frame(width: 220)
-                    Text("文字起こし中 \(model.progress)%").foregroundStyle(.secondary)
+                if model.isPending(item) {
+                    Button {
+                        model.actions.transcribe(item.session)
+                    } label: {
+                        Label("文字起こしを始める", systemImage: "text.quote")
+                            .font(.title3)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                 } else {
-                    ProgressView()
-                    Text(model.modelStatus == nil ? "文字起こしの順番を待っています" : "文字起こしモデルの準備を待っています")
-                        .foregroundStyle(.secondary)
+                    if model.transcribingID == item.id {
+                        ProgressView(value: Double(model.progress), total: 100).frame(width: 220)
+                        Text("文字起こし中 \(model.progress)%").foregroundStyle(.secondary)
+                    } else {
+                        ProgressView()
+                        Text(model.modelStatus == nil ? "文字起こしの順番を待っています" : "文字起こしモデルの準備を待っています")
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("中止") { model.actions.cancelTranscription(item.session) }
                 }
-                Button("中止") { model.actions.cancelTranscription(item.session) }
             }
         case .cancelled:
             VStack(spacing: 10) {
                 Image(systemName: "stop.circle").font(.largeTitle).foregroundStyle(.secondary)
                 Text("文字起こしを中止しました")
-                Text("音声は残っています。").font(.callout).foregroundStyle(.secondary)
                 Button("やり直す") { model.actions.retry(item.session) }
             }
         case .failed:
@@ -701,7 +704,6 @@ private struct LineRow: View {
             }
         }
         .contentShape(Rectangle())
-        .help("クリックでここから再生")
     }
 
     private func labelColor(_ label: String) -> Color {
@@ -732,13 +734,10 @@ private struct PlayerBar: View {
             .overlay {
                 HStack(spacing: 22) {
                     Button { player.skip(by: -15) } label: { Image(systemName: "gobackward.15") }
-                        .help("15秒戻る")
                     Button { player.togglePlayback() } label: {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title)
                     }
-                    .help(player.isPlaying ? "一時停止" : "再生")
                     Button { player.skip(by: 15) } label: { Image(systemName: "goforward.15") }
-                        .help("15秒進む")
                 }
                 .buttonStyle(.plain)
                 .font(.title2)
@@ -767,7 +766,7 @@ private struct PlayerBar: View {
 private extension PlayerBar {
     /// 再生速度の切り替え
     var speedMenu: some View {
-        UpwardMenu(help: "再生速度", items: {
+        UpwardMenu(name: "再生速度", items: {
             PlayerModel.rates.map { rate in
                 .entry(PlayerModel.label(for: rate), checked: rate == player.rate) { player.setRate(rate) }
             }

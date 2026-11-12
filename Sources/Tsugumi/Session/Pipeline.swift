@@ -15,12 +15,19 @@ final class Pipeline {
     private var cancelled = false
     /// いまの1件だけをやめる指示が出ているか
     private var skipping = false
+    /// フォルダごとの、先に作っている聞き返し用の音声。文字起こしはこれが終わるのを待つ
+    private var listeningTasks: [String: Task<Void, Never>] = [:]
     private let transcriber = Transcriber()
 
     /// これより小さい最大振幅しかないトラックは「音が入っていない」とみなす
     private nonisolated static let silencePeak = 50
 
     var isBusy: Bool { current != nil || !waiting.isEmpty }
+
+    /// この録音が、処理中か順番待ちか
+    func isQueued(folder: URL) -> Bool {
+        current?.folder.path == folder.path || waiting.contains { $0.folder.path == folder.path }
+    }
     var pendingCount: Int { waiting.count + (current == nil ? 0 : 1) }
 
     func enqueue(_ session: Session) {
@@ -73,7 +80,8 @@ final class Pipeline {
         onFinished?(session, nil)
     }
 
-    /// アプリ終了時に呼ぶ。途中の分は「文字起こし待ち」のまま残り、次回起動時に再開される。
+    /// アプリ終了時に呼ぶ。途中の分は「文字起こし待ち」のまま残り、次回起動時に再開される
+    /// （どれを再開するかはアプリ側が覚えている）。
     func cancelAll() {
         cancelled = true
         waiting.removeAll()
@@ -132,6 +140,9 @@ final class Pipeline {
         let original = session.meta.originalFile
         let microphone = source == .recording ? session.meta.microphone : nil
 
+        // 先に聞き返し用の音声を作っている最中なら、終わるのを待つ（同じファイルを同時に触らない）
+        if let making = listeningTasks[folder.path] { await making.value }
+
         // 音声ファイルの準備は重いのでメインスレッドの外で行う
         let prepared = try await Task.detached(priority: .userInitiated) { () -> Prepared in
             switch source {
@@ -150,13 +161,13 @@ final class Pipeline {
         if skipping { throw CancellationError() }
         let forListening = session
         await Task.detached(priority: .utility) {
-            Self.makeListeningCopy(prepared, session: forListening)
+            Self.makeListeningCopy(tracks: prepared.tracks, session: forListening)
         }.value
         onChange?()
 
         // 音声の準備中に「中止」が押されていたら、whisper を始めない
         if skipping { throw CancellationError() }
-        let segments = try await transcriber.run(wav: prepared.wav, diarize: prepared.diarize, tools: tools) { percent in
+        let segments = try await transcriber.run(wav: prepared.wav, diarize: prepared.diarize, tools: tools, audioSeconds: duration) { percent in
             Task { @MainActor [weak self] in
                 self?.progress = percent
                 self?.onChange?()
@@ -200,22 +211,48 @@ final class Pipeline {
 
     private nonisolated static let whisperInput = "whisper-input.wav"
 
+    /// 文字起こしを待たずに、聞き返し用の音声（audio.m4a）だけ先に作る。
+    /// 録音が終わった直後に呼ぶ。文字起こしを後回しにしていても再生できるようにするため
+    func makeListeningCopy(for session: Session) {
+        guard session.meta.source == .recording else { return }
+        let key = session.folder.path
+        guard listeningTasks[key] == nil else { return }
+        listeningTasks[key] = Task.detached(priority: .utility) {
+            if let tracks = try? Self.activeTracks(in: session.folder), !tracks.isEmpty {
+                Self.makeListeningCopy(tracks: tracks, session: session)
+            }
+            await MainActor.run { [weak self] in
+                self?.listeningTasks[key] = nil
+                self?.onChange?()
+            }
+        }
+    }
+
+    /// 録音したトラックのうち、音が入っていたもの
+    private nonisolated static func activeTracks(in folder: URL) throws -> [URL] {
+        let files = FileManager.default
+        func isActive(_ url: URL) throws -> Bool {
+            guard files.fileExists(atPath: url.path) else { return false }
+            try Wav.repairMonoHeader(url)
+            return try Wav.peak(url) >= silencePeak
+        }
+        return try [Recorder.systemFile, Recorder.micFile]
+            .map { folder.appendingPathComponent($0) }
+            .filter { try isActive($0) }
+    }
+
     private nonisolated static func prepareRecording(in folder: URL) throws -> Prepared {
         let files = FileManager.default
         let system = folder.appendingPathComponent(Recorder.systemFile)
         let mic = folder.appendingPathComponent(Recorder.micFile)
         let whisper = folder.appendingPathComponent(whisperInput)
 
-        func isActive(_ url: URL) throws -> Bool {
-            guard files.fileExists(atPath: url.path) else { return false }
-            try Wav.repairMonoHeader(url)
-            return try Wav.peak(url) >= silencePeak
-        }
         func seconds(_ url: URL) -> Double {
             Double(Wav.monoFrames(url)) / Double(Wav.recordingRate)
         }
-        let systemActive = try isActive(system)
-        let micActive = try isActive(mic)
+        let active = try activeTracks(in: folder)
+        let systemActive = active.contains(system)
+        let micActive = active.contains(mic)
 
         switch (systemActive, micActive) {
         case (true, true):
@@ -261,7 +298,8 @@ final class Pipeline {
     }
 
     /// 録音を聞き返し用の m4a（audio.m4a）にする。取り込みは元のファイルを再生するので何もしない。
-    private nonisolated static func makeListeningCopy(_ prepared: Prepared, session: Session) {
+    /// - Parameter tracks: 音が入っていたトラック（1本か2本）
+    private nonisolated static func makeListeningCopy(tracks: [URL], session: Session) {
         guard session.meta.source == .recording else { return }
         let folder = session.folder
         guard isSameRecording(session, allowing: [.recorded]) else { return }
@@ -272,23 +310,25 @@ final class Pipeline {
         func modified(_ url: URL) -> Date {
             (try? files.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
         }
-        if Wav.fileSize(audio) > 0, prepared.tracks.allSatisfy({ modified(audio) >= modified($0) }) { return }
+        if Wav.fileSize(audio) > 0, tracks.allSatisfy({ modified(audio) >= modified($0) }) { return }
 
-        // 相手と自分を混ぜて、両耳から普通に聞こえる1本にする
-        guard var listening = prepared.tracks.first else { return }
-        let mix = folder.appendingPathComponent("mix.wav")
+        // 相手と自分を混ぜて、両耳から普通に聞こえる1本にする。
+        // 作業ファイルは呼び出しごとに別の名前にして、同時に走っても互いを壊さない
+        guard var listening = tracks.first else { return }
+        let stamp = UUID().uuidString
+        let mix = folder.appendingPathComponent("mix-\(stamp).wav")
         defer { try? files.removeItem(at: mix) }
-        if prepared.tracks.count == 2 {
+        if tracks.count == 2 {
             do {
-                try Wav.mix(prepared.tracks[0], prepared.tracks[1], to: mix)
+                try Wav.mix(tracks[0], tracks[1], to: mix)
                 listening = mix
             } catch {
                 return
             }
         }
 
-        let temporary = folder.appendingPathComponent("audio-tmp.m4a")
-        try? files.removeItem(at: temporary)
+        let temporary = folder.appendingPathComponent("audio-\(stamp).tmp.m4a")
+        defer { try? files.removeItem(at: temporary) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
         process.arguments = ["-f", "m4af", "-d", "aac", "-b", "80000", listening.path, temporary.path]
@@ -301,10 +341,7 @@ final class Pipeline {
             return
         }
         // 途中のファイルを再生させないよう、できあがってから本来の名前にする
-        guard process.terminationStatus == 0, Wav.fileSize(temporary) > 0 else {
-            try? FileManager.default.removeItem(at: temporary)
-            return
-        }
+        guard process.terminationStatus == 0, Wav.fileSize(temporary) > 0 else { return }
         try? FileManager.default.removeItem(at: audio)
         try? FileManager.default.moveItem(at: temporary, to: audio)
     }

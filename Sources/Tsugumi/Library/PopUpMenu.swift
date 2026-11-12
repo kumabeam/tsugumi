@@ -10,14 +10,14 @@ enum PopUpItem {
 /// 上に向かって開くメニュー。ウィンドウの下端に置くボタン用。
 /// SwiftUI の Menu は下に開くので、下端に置くと中身が画面の外へ出てしまう。
 struct UpwardMenu<Label: View>: View {
-    /// ツールチップと、読み上げの名前
-    let help: String
+    /// 読み上げの名前
+    let name: String
     /// 開くたびに呼ぶ（つながっているマイクなど、その時点の状態で中身を作る）
     let items: @MainActor () -> [PopUpItem]
     let label: Label
 
-    init(help: String, items: @escaping @MainActor () -> [PopUpItem], @ViewBuilder label: () -> Label) {
-        self.help = help
+    init(name: String, items: @escaping @MainActor () -> [PopUpItem], @ViewBuilder label: () -> Label) {
+        self.name = name
         self.items = items
         self.label = label()
     }
@@ -25,21 +25,20 @@ struct UpwardMenu<Label: View>: View {
     var body: some View {
         label
             .contentShape(Rectangle())
-            .overlay { MenuArea(help: help, items: items) }
+            .overlay { MenuArea(name: name, items: items) }
     }
 }
 
 /// ラベルに重ねる透明なビュー。押されたら NSMenu を上向きに出す
 private struct MenuArea: NSViewRepresentable {
-    let help: String
+    let name: String
     let items: @MainActor () -> [PopUpItem]
 
     func makeNSView(context: Context) -> AreaView { AreaView() }
 
     func updateNSView(_ view: AreaView, context: Context) {
         view.items = items
-        view.toolTip = help
-        view.setAccessibilityLabel(help)
+        view.setAccessibilityLabel(name)
         // SwiftUI の .disabled は素の NSView には効かないので、自分で見る
         view.isEnabled = context.environment.isEnabled
     }

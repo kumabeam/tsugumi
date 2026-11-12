@@ -33,7 +33,9 @@ enum Snapshot {
             model.isFinding = true
             model.findText = arguments[flag + 1]
         }
-        if let waiting = model.items.first(where: { $0.session.meta.status == .recorded }) {
+        // --pending: 録音済みを「文字起こし前」のまま描く。指定が無ければ文字起こし中として描く
+        if let waiting = model.items.first(where: { $0.session.meta.status == .recorded }), !arguments.contains("--pending") {
+            model.setQueued([waiting.id])
             model.setTranscribing(id: waiting.id, progress: 42)
         }
 

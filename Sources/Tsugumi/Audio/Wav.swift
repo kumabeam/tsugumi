@@ -56,8 +56,16 @@ enum Wav {
         let dataBytes = (size - headerSize) / 2 * 2
         let handle = try FileHandle(forUpdating: url)
         defer { try? handle.close() }
-        // 長さを書いてある2か所だけを直す（周波数などはそのまま）
+        // 長さを書いてある2か所だけを直す（周波数などはそのまま）。
+        // すでに合っていれば書かない（書くと更新日時が進み、聞き返し用の音声を作り直す判定が狂う）
+        func read(at offset: UInt64) throws -> Int {
+            try handle.seek(toOffset: offset)
+            let data = try handle.read(upToCount: 4) ?? Data()
+            guard data.count == 4 else { return -1 }
+            return Int(UInt32(littleEndian: data.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }))
+        }
         func write(_ value: Int, at offset: UInt64) throws {
+            guard try read(at: offset) != value else { return }
             var raw = UInt32(clamping: value).littleEndian
             try handle.seek(toOffset: offset)
             try handle.write(contentsOf: withUnsafeBytes(of: &raw) { Data($0) })

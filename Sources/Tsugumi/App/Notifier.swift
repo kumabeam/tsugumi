@@ -1,5 +1,6 @@
 import AppKit
 import UserNotifications
+import os
 
 /// macOS の通知を出す。通知をクリックしたときの動きもここで受ける。
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
@@ -15,6 +16,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// .app として起動していないとき（開発中のコマンド実行など）は通知を使えない
     private let available = Bundle.main.bundleIdentifier != nil
     private var center: UNUserNotificationCenter? { available ? .current() : nil }
+    private let log = Logger(subsystem: "io.github.kumabeam.tsugumi", category: "notify")
 
     func setUp() {
         guard let center else { return }
@@ -23,7 +25,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         center.setNotificationCategories([
             UNNotificationCategory(identifier: Self.meetingCategory, actions: [start], intentIdentifiers: []),
         ])
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        center.requestAuthorization(options: [.alert, .sound]) { [log] granted, error in
+            log.notice("通知の許可: \(granted ? "あり" : "なし")\(error.map { " \($0.localizedDescription)" } ?? "", privacy: .public)")
+        }
+        center.getNotificationSettings { [log] settings in
+            log.notice("通知の設定: 状態 \(settings.authorizationStatus.rawValue) 表示 \(settings.alertSetting.rawValue) 通知センター \(settings.notificationCenterSetting.rawValue)")
+        }
     }
 
     func notify(title: String, body: String, openFolder: URL? = nil) {
@@ -43,7 +50,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func post(_ content: UNMutableNotificationContent) {
-        center?.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        center?.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) { [log] error in
+            if let error { log.notice("通知を出せなかった: \(error.localizedDescription, privacy: .public)") }
+        }
     }
 
     // MARK: - UNUserNotificationCenterDelegate

@@ -47,6 +47,8 @@ final class LibraryModel: ObservableObject {
         var chooseFiles: () -> Void = {}
         /// 使うマイクを変える（nil = macOS の設定に従う）
         var selectMicrophone: (String?) -> Void = { _ in }
+        /// 未処理の録音の文字起こしを始める
+        var transcribe: (Session) -> Void = { _ in }
     }
 
     @Published private(set) var items: [Item] = []
@@ -63,6 +65,8 @@ final class LibraryModel: ObservableObject {
     /// 録音中の音量（1秒おきに更新）。毎秒ウィンドウ全体を描き直さないよう、別のオブジェクトにしてある
     let levels = LevelsModel()
     @Published private(set) var transcribingID: String?
+    /// 文字起こしの処理中か順番待ちの録音
+    @Published private(set) var queuedIDs: Set<String> = []
     @Published private(set) var progress = 0
     /// 文字起こしモデルの準備状況。揃っていれば nil
     @Published private(set) var modelStatus: String?
@@ -161,11 +165,20 @@ final class LibraryModel: ObservableObject {
         if modelFailed != failed { modelFailed = failed }
     }
 
+    func setQueued(_ ids: Set<String>) {
+        if queuedIDs != ids { queuedIDs = ids }
+    }
+
+    /// 録音は終わっているが、文字起こしをまだ頼んでいない
+    func isPending(_ item: Item) -> Bool {
+        item.session.meta.status == .recorded && !queuedIDs.contains(item.id)
+    }
+
     func setTranscribing(id: String?, progress: Int) {
         if transcribingID != id { transcribingID = id }
         if self.progress != progress { self.progress = progress }
-        // 文字起こしの途中で聞き返し用の音声ができたら、その時点で再生できるようにする
-        if let item = selectedItem, item.id == id { loadAudioIfNeeded(for: item) }
+        // 聞き返し用の音声ができたら（文字起こしの途中でも、文字起こし前でも）、その時点で再生できるようにする
+        if let item = selectedItem { loadAudioIfNeeded(for: item) }
     }
 
     // MARK: - 操作

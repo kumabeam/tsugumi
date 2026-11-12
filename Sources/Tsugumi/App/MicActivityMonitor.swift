@@ -1,70 +1,103 @@
 import CoreAudio
 import Foundation
+import os
 
 /// ほかのアプリ（Zoom・Teams・ブラウザの Meet など）がマイクを使い始めたことを検知する。
-/// 会議アプリを個別に見張るのではなく「マイクが使われ始めた」を合図にしている。
+/// 会議アプリを個別に見張るのではなく「どれかのアプリがマイクから録り始めた」を合図にしている。
+///
+/// 装置ではなく、音声を使っているプロセスの一覧（macOS 14.2 から取れる）を見る。
+/// 装置の「使用中」は再生だけでも立つので、ヘッドセットで音楽を流しただけで会議と間違える。
+/// 既定のマイクだけを見る作りだと、会議アプリで別のマイクを選んでいる人には一度も反応しない。
+///
+/// 1秒おきに読んで比べる。プロセスの「マイク使用中」の変化通知（リスナー）は試したところ一度も
+/// 届かなかったため（macOS 15.7、ボイスメモで確認）
 final class MicActivityMonitor {
-    /// マイクの使用状態が変わったとき（true = 使われ始めた）
-    var onChange: ((Bool) -> Void)?
+    /// 新しくマイクを使い始めたアプリがあったとき（その pid の集合）。空は「どのアプリも使っていない」。
+    /// 「どれかが使っているか」の変化ではなく「新しく使い始めたアプリがあるか」で見る。
+    /// Discord のようにマイクを開きっぱなしのアプリがいると、会議の開始が埋もれてしまうため
+    var onChange: ((Set<pid_t>) -> Void)?
 
-    private var device = AudioObjectID(kAudioObjectUnknown)
-    private var lastState = false
-    private let queue = DispatchQueue.main
-
-    private var defaultInputAddress = AudioObjectPropertyAddress(
-        mSelector: kAudioHardwarePropertyDefaultInputDevice,
-        mScope: kAudioObjectPropertyScopeGlobal,
-        mElement: kAudioObjectPropertyElementMain
-    )
-    private var runningAddress = AudioObjectPropertyAddress(
-        mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-        mScope: kAudioObjectPropertyScopeGlobal,
-        mElement: kAudioObjectPropertyElementMain
-    )
-
-    private lazy var deviceChanged: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-        self?.bindToDefaultInput()
-    }
-    private lazy var runningChanged: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-        self?.check()
-    }
+    /// いまマイクから録っているプロセス（自分は除く）
+    private var running: Set<pid_t> = []
+    private var timer: Timer?
+    private let ownPID = getpid()
+    private let log = Logger(subsystem: "io.github.kumabeam.tsugumi", category: "meeting")
 
     func start() {
-        AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject), &defaultInputAddress, queue, deviceChanged
-        )
-        bindToDefaultInput()
+        running = runningNow()
+        log.notice("監視開始: プロセス \(Self.processObjects().count) 件、使用中 \(self.running.count) 件")
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.check()
+        }
+        timer?.tolerance = 0.5
     }
 
-    var isMicInUse: Bool {
-        guard device != kAudioObjectUnknown else { return false }
-        var running: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        let status = AudioObjectGetPropertyData(device, &runningAddress, 0, nil, &size, &running)
-        return status == noErr && running != 0
+    /// このアプリたちが、まだマイクから録っているか（一瞬だけの使用を見分けるための再確認用）
+    func isUsingInput(_ pids: Set<pid_t>) -> Bool {
+        !runningNow().isDisjoint(with: pids)
     }
 
-    /// 既定のマイクが変わったら（AirPods をつないだ等）、見張る先を付け替える
-    private func bindToDefaultInput() {
-        if device != kAudioObjectUnknown {
-            AudioObjectRemovePropertyListenerBlock(device, &runningAddress, queue, runningChanged)
-        }
-        var current = AudioObjectID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &defaultInputAddress, 0, nil, &size, &current
-        )
-        device = current
-        if device != kAudioObjectUnknown {
-            AudioObjectAddPropertyListenerBlock(device, &runningAddress, queue, runningChanged)
-        }
-        lastState = isMicInUse
+    private func runningNow() -> Set<pid_t> {
+        Set(Self.processObjects().compactMap { process in
+            guard Self.isRunningInput(process) else { return nil }
+            let pid = Self.pid(process)
+            return pid > 0 && pid != ownPID ? pid : nil
+        })
     }
 
     private func check() {
-        let state = isMicInUse
-        guard state != lastState else { return }
-        lastState = state
-        onChange?(state)
+        let now = runningNow()
+        defer { running = now }
+        let started = now.subtracting(running)
+        if !started.isEmpty {
+            log.notice("マイクを使い始めた: \(started.sorted(), privacy: .public)（使用中 \(now.count)）")
+            onChange?(started)
+        } else if now.isEmpty, !running.isEmpty {
+            log.notice("マイクの使用が全部止まった")
+            onChange?([])
+        }
+    }
+
+    // MARK: - CoreAudio
+
+    private static func processObjects() -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr else {
+            return []
+        }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids) == noErr else {
+            return []
+        }
+        return Array(ids.prefix(Int(size) / MemoryLayout<AudioObjectID>.size))
+    }
+
+    private static func pid(_ process: AudioObjectID) -> pid_t {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyPID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var pid: pid_t = 0
+        var size = UInt32(MemoryLayout<pid_t>.size)
+        guard AudioObjectGetPropertyData(process, &address, 0, nil, &size, &pid) == noErr else { return -1 }
+        return pid
+    }
+
+    private static func isRunningInput(_ process: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyIsRunningInput,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var running: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(process, &address, 0, nil, &size, &running)
+        return status == noErr && running != 0
     }
 }
