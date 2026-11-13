@@ -37,6 +37,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var recorder: Recorder?
     private var state: State = .idle
     private var timer: Timer?
+    /// 録音していないときの音量表示。録音一覧ウィンドウを開いている間だけ動く
+    private var monitor: LevelMonitor?
+    /// メーターの読み取り。録音中も録音前も、0.1 秒おき（1 秒だと遅れて見える）
+    private var levelTimer: Timer?
+    private static let levelInterval: TimeInterval = 0.1
+    /// 始めている途中の監視。止めるときはこれを待ってから止める（録音と取り込みが重ならないように）
+    private var monitorStartTask: Task<Void, Never>?
+    /// 止めている途中の監視。続けて止める・始めるときはこれを待つ
+    private var monitorStopTask: Task<Void, Never>?
+    /// マイクを替えて測り直している途中（メーターを消さないため）
+    private var monitorRestarting = false
+    /// 止めるたびに増やす。始めている途中で要らなくなったのを見分ける
+    private var monitorGeneration = 0
+    /// 勝手に止まった・始められなかった回数。続くときは諦める（ウィンドウを開き直せばまた試す）
+    private var monitorFailures = 0
+    private static let monitorFailureLimit = 5
+    private static let levelsLog = Logger(subsystem: "io.github.kumabeam.tsugumi", category: "levels")
     /// 録音中、最後に音（相手か自分）が届いた時刻。無音が続いたときの通知に使う
     private var lastSoundAt = Date()
     private var warnedSilence = false
@@ -80,11 +97,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 Microphones.select(id: id)
                 // 設定ウィンドウを開いていれば、そちらの表示も合わせる
                 self?.settings.refresh()
+                self?.restartMonitor()
             },
             transcribe: { [weak self] session in self?.retry(session) }
         )
         installLibraryKeys()
         settings.changeBaseFolder = { [weak self] in self?.changeBaseFolder() }
+        settings.microphoneChanged = { [weak self] in self?.restartMonitor() }
         settings.checkForUpdates = { [weak self] in self?.updater.check() }
         NSApp.mainMenu = Self.makeMainMenu()
         // Dock と ⌘Tab に出るアイコンを明示する。起動後に「普通のアプリ」へ切り替える作りだと、
@@ -148,6 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         NSApp.setActivationPolicy(.regular)
         libraryWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        monitorFailures = 0
+        startMonitorIfNeeded()
     }
 
     @objc private func openLibrary() {
@@ -208,13 +229,159 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func windowWillClose(_ notification: Notification) {
         let closing = notification.object as? NSWindow
-        if closing === libraryWindow { library.player.pause() }
+        if closing === libraryWindow {
+            library.player.pause()
+            stopMonitor()
+        }
         // 自分のウィンドウが全部閉じたら、メニューバーだけの常駐に戻る
         let stillOpen = [libraryWindow, settingsWindow].contains { window in
             guard let window, window !== closing else { return false }
             return window.isVisible || window.isMiniaturized
         }
         if !stillOpen { NSApp.setActivationPolicy(.accessory) }
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        if (notification.object as? NSWindow) === libraryWindow { stopMonitor() }
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        if (notification.object as? NSWindow) === libraryWindow { startMonitorIfNeeded() }
+    }
+
+    // MARK: - 録音前の音量表示
+
+    /// ウィンドウを開いていて録音していないとき、音量だけ測り始める。
+    /// 権限をまだ求めていないうちは何もしない（権限は録音ボタンを押したときに求める）
+    private func startMonitorIfNeeded() {
+        guard case .idle = state, monitor == nil, monitorStartTask == nil else { return }
+        guard let window = libraryWindow, window.isVisible, !window.isMiniaturized else { return }
+        guard monitorFailures < Self.monitorFailureLimit else { return }
+        guard CGPreflightScreenCaptureAccess(), AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
+
+        let generation = monitorGeneration
+        let monitor = LevelMonitor()
+        monitor.onStopped = { [weak self, weak monitor] in
+            guard let monitor else { return }
+            self?.monitorStopped(monitor)
+        }
+        monitorStartTask = Task {
+            // 止めている途中のものがあれば、終わってから始める（取り込みを 2 つ同時に動かさない）
+            await monitorStopTask?.value
+            do {
+                try await monitor.start(microphoneID: Microphones.selected()?.id)
+            } catch {
+                monitorStartTask = nil
+                monitorFailures += 1
+                Self.levelsLog.notice("音量の監視を始められない: \(error.localizedDescription, privacy: .public)")
+                render()
+                return
+            }
+            // 始めている間に録音が始まった・ウィンドウが閉じたなら捨てる
+            guard generation == monitorGeneration, case .idle = state, self.monitor == nil else {
+                await monitor.stop()
+                monitorStartTask = nil
+                render()
+                return
+            }
+            monitorStartTask = nil
+            // 始めた直後に止まった（スリープに入った直後など）。少し待って測り直す
+            guard !monitor.isStopped else {
+                monitorStopped(monitor, wasCurrent: false)
+                return
+            }
+            self.monitor = monitor
+            monitorFailures = 0
+            Self.levelsLog.notice("音量の監視を開始")
+            startLevelTimer()
+            render()
+        }
+        render()
+    }
+
+    /// 音量表示の監視をやめる。止め終わるのを待つ必要があるとき（録音を始める直前）は返り値を await する
+    @discardableResult
+    private func stopMonitor() -> Task<Void, Never>? {
+        monitorGeneration += 1
+        // 録音中はタイマーは録音のもの（ウィンドウを閉じても録音のメーターと無音の見張りは続ける）
+        if recorder == nil { stopLevelTimer() }
+        // 始めている途中のものは、その Task が世代の違いを見て自分で止める
+        let starting = monitorStartTask
+        let previous = monitorStopTask
+        guard let monitor else {
+            if starting == nil { return previous }
+            let task = Task {
+                await previous?.value
+                await starting?.value
+            }
+            monitorStopTask = task
+            return task
+        }
+        self.monitor = nil
+        library.levels.set(AudioLevels())
+        Self.levelsLog.notice("音量の監視を停止")
+        render()
+        let task = Task {
+            await previous?.value
+            await starting?.value
+            await monitor.stop()
+        }
+        monitorStopTask = task
+        return task
+    }
+
+    /// マイクを選び直したとき。新しいマイクで測り直す
+    private func restartMonitor() {
+        monitorFailures = 0
+        monitorRestarting = true
+        let stopping = stopMonitor()
+        Task {
+            await stopping?.value
+            monitorRestarting = false
+            startMonitorIfNeeded()
+        }
+    }
+
+    private func startLevelTimer() {
+        levelTimer?.invalidate()
+        levelTimer = Timer.scheduledTimer(withTimeInterval: Self.levelInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.levelTick() }
+        }
+    }
+
+    private func stopLevelTimer() {
+        levelTimer?.invalidate()
+        levelTimer = nil
+    }
+
+    /// 録音中なら録音の、そうでなければ監視の音量を表示に渡す
+    private func levelTick() {
+        if let recorder {
+            let levels = recorder.takeLevels()
+            library.levels.set(levels)
+            if levels.hasSound {
+                lastSoundAt = Date()
+                warnedSilence = false
+            }
+        } else if let monitor {
+            library.levels.set(monitor.takeLevels())
+        }
+    }
+
+    /// スリープや権限の取り消しで勝手に止まったとき。少し待って測り直す
+    private func monitorStopped(_ stopped: LevelMonitor, wasCurrent: Bool = true) {
+        if wasCurrent {
+            guard stopped === monitor else { return }
+            monitor = nil
+            stopLevelTimer()
+        }
+        monitorFailures += 1
+        Self.levelsLog.notice("音量の監視が止まった（\(self.monitorFailures) 回目）")
+        render()
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            startMonitorIfNeeded()
+        }
     }
 
     /// コピー＆ペーストや ⌘W など、標準のキー操作を効かせるためのメニュー。
@@ -339,6 +506,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         state = .starting
         render()
         Task {
+            // 音量表示の取り込みは録音と同じ経路なので、録音のものに置き換える
+            await stopMonitor()?.value
             guard await AVCaptureDevice.requestAccess(for: .audio) else {
                 state = .idle
                 render()
@@ -346,6 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                     title: "マイクの許可が必要です",
                     message: "システム設定 > プライバシーとセキュリティ > マイク で Tsugumi をオンにしてください。"
                 )
+                startMonitorIfNeeded()
                 return
             }
             do {
@@ -372,23 +542,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                     Task { @MainActor in self?.recordingTick() }
                 }
+                startLevelTimer()
             } catch {
                 state = .idle
                 showAlert(title: "録音を開始できませんでした", message: error.localizedDescription)
+                startMonitorIfNeeded()
             }
             render()
         }
     }
 
-    /// 録音中、1秒ごと。音量を表示に渡し、長く無音なら知らせる
+    /// 録音中、1秒ごと。長く無音なら知らせる（音量そのものは levelTick が渡す）
     private func recordingTick() {
-        if let recorder {
-            let levels = recorder.takeLevels()
-            library.levels.set(levels)
-            if levels.hasSound {
-                lastSoundAt = Date()
-                warnedSilence = false
-            } else if !warnedSilence, Date().timeIntervalSince(lastSoundAt) > Self.silenceWarningAfter {
+        if recorder != nil {
+            if !warnedSilence, Date().timeIntervalSince(lastSoundAt) > Self.silenceWarningAfter {
                 warnedSilence = true
                 notifier.notify(
                     title: "5分間、音が届いていません",
@@ -403,6 +570,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         guard case .recording(let session, _) = state, let recorder else { return }
         state = .stopping
         timer?.invalidate()
+        stopLevelTimer()
         render()
         Task {
             // 書き込みエラーは起きた時点で知らせてある（onWriteError）
@@ -415,6 +583,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func recordingInterrupted() {
         guard case .recording(let session, _) = state else { return }
         timer?.invalidate()
+        stopLevelTimer()
         finishRecording(session)
         notifier.notify(title: "録音が中断されました", body: "そこまでの音声は保存され、文字起こしを始めています。")
     }
@@ -433,6 +602,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         library.reload()
         render()
+        startMonitorIfNeeded()
     }
 
     // MARK: - ファイル取り込み
@@ -513,8 +683,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             library.setRecording(since: since)
         } else {
             library.setRecording(since: nil)
-            library.levels.set(AudioLevels())
         }
+        // メーターは、録音中か、録音前の監視が動いている間だけ出す
+        // 測り直している短い間も出したままにする（消すと録音ボタンの位置が動くため）
+        let live: Bool
+        if case .idle = state {
+            live = monitor != nil || monitorStartTask != nil || monitorRestarting
+        } else {
+            live = true
+        }
+        library.levels.setLive(live)
+        if !live { library.levels.set(AudioLevels()) }
         library.setTranscribing(id: pipeline.current?.folder.path, progress: pipeline.progress)
         var queued = Set(pipeline.waiting.map(\.folder.path))
         if let current = pipeline.current { queued.insert(current.folder.path) }

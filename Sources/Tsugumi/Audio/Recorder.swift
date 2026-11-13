@@ -15,6 +15,15 @@ struct AudioLevels: Equatable {
         guard peak > 0 else { return 0 }
         return max(0, min(1, 1 + Double(20 * log10(peak)) / 60))
     }
+
+    /// メーターの幅（48 px）で見て同じに描かれるか
+    func looksSame(as other: AudioLevels) -> Bool {
+        Self.step(system) == Self.step(other.system) && Self.step(mic) == Self.step(other.mic)
+    }
+
+    private static func step(_ peak: Float) -> Int {
+        peak > 0.005 ? Int((Self.meter(peak) * 48).rounded()) : -1
+    }
 }
 
 /// Mac から出ている音とマイクを同時に録る。
@@ -43,6 +52,17 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
 
     /// - Parameter microphoneID: 使うマイク。nil なら macOS の「サウンド」設定で選ばれているもの
     func start(folder: URL, microphoneID: String? = nil) async throws {
+        system = try TrackWriter(url: folder.appendingPathComponent(Self.systemFile))
+        mic = try TrackWriter(url: folder.appendingPathComponent(Self.micFile))
+        stream = try await Self.startStream(microphoneID: microphoneID, delegate: self, output: self, queue: queue, discardQueue: discardQueue)
+    }
+
+    /// Mac から出る音とマイクを受け取る取り込みを始める。録音と、録音前の音量表示の両方で使う。
+    /// - Parameter discardQueue: 映像（使わない）を受け取って捨てるキュー
+    static func startStream(
+        microphoneID: String?, delegate: SCStreamDelegate, output: SCStreamOutput,
+        queue: DispatchQueue, discardQueue: DispatchQueue
+    ) async throws -> SCStream {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let display = content.displays.first else {
             throw TsugumiError.message("ディスプレイが見つかりません")
@@ -61,19 +81,16 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         configuration.showsCursor = false
 
-        system = try TrackWriter(url: folder.appendingPathComponent(Self.systemFile))
-        mic = try TrackWriter(url: folder.appendingPathComponent(Self.micFile))
-
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
-        try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: queue)
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: discardQueue)
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: delegate)
+        try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: queue)
+        try stream.addStreamOutput(output, type: .microphone, sampleHandlerQueue: queue)
+        try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: discardQueue)
         try await stream.startCapture()
-        self.stream = stream
+        return stream
     }
 
-    /// 直近の音量（相手 = Mac から出た音、自分 = マイク）。1秒おきに読む前提
+    /// 直近の音量（相手 = Mac から出た音、自分 = マイク）。0.1 秒おきに読む前提
     func takeLevels() -> AudioLevels {
         AudioLevels(system: system?.takePeak() ?? 0, mic: mic?.takePeak() ?? 0)
     }

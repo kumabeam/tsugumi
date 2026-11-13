@@ -273,8 +273,8 @@ private struct RecordBar: View {
                         .lineLimit(1)
                         .fixedSize()
                 }
-                LevelMeters(model: model.levels)
             }
+            LevelMeters(model: model.levels)
         }
         // 両端のボタンと重ならないようにする
         .padding(.leading, 48)
@@ -332,17 +332,18 @@ private struct RecordBar: View {
     }
 }
 
-/// 録音中の音量。相手（Mac から出た音）と自分（マイク）を別々に出す。
-/// 音が届いていないことに、会議の最中に気づくためのもの
+/// 相手（Mac から出る音）と自分（マイク）の音量。録音前から出して、音が入っているかを録音を始める前に確かめられるようにする
 private struct LevelMeters: View {
     @ObservedObject var model: LevelsModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            row("相手", model.current.system)
-            row("自分", model.current.mic)
+        if model.isLive {
+            VStack(alignment: .leading, spacing: 4) {
+                row("相手", model.current.system)
+                row("自分", model.current.mic)
+            }
+            .fixedSize()
         }
-        .fixedSize()
     }
 
     private func row(_ label: String, _ peak: Float) -> some View {
@@ -353,12 +354,14 @@ private struct LevelMeters: View {
                 .frame(width: 24, alignment: .trailing)
             ZStack(alignment: .leading) {
                 Capsule().fill(.quaternary)
-                Capsule()
+                // 幅ではなく拡大率を変える。レイアウトをやり直さずに済むので、0.1 秒おきに動かしても軽い
+                Rectangle()
                     .fill(peak > 0.005 ? Color.green : Color.secondary.opacity(0.4))
-                    .frame(width: max(3, 48 * AudioLevels.meter(peak)))
+                    .scaleEffect(x: max(3 / 48, AudioLevels.meter(peak)), anchor: .leading)
             }
             .frame(width: 48, height: 6)
-            .animation(.linear(duration: 0.2), value: peak)
+            .clipShape(Capsule())
+            .animation(.linear(duration: 0.1), value: peak)
         }
     }
 }

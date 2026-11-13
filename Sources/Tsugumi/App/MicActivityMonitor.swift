@@ -41,8 +41,18 @@ final class MicActivityMonitor {
         Set(Self.processObjects().compactMap { process in
             guard Self.isRunningInput(process) else { return nil }
             let pid = Self.pid(process)
-            return pid > 0 && pid != ownPID ? pid : nil
+            guard pid > 0, pid != ownPID, !Self.isSystemCaptureDaemon(pid) else { return nil }
+            return pid
         })
+    }
+
+    /// macOS の画面・音声取り込みの裏方（/usr/libexec/replayd）か。
+    /// このアプリが音量を測ったり録ったりするたびにマイクを使い始めるので、会議アプリと間違えないよう外す。
+    /// pid は使い回されるので覚えずに毎回見る（軽い呼び出しで、数は多くても毎秒数件）
+    private static func isSystemCaptureDaemon(_ pid: pid_t) -> Bool {
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+        return String(cString: buffer).hasSuffix("/replayd")
     }
 
     private func check() {

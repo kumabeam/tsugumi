@@ -12,8 +12,11 @@ final class SettingsModel: ObservableObject {
             // 読み直し中は書かない。選んだマイクが今つながっていないだけで、記憶を消してしまわないように
             guard !loading, selectedMicrophoneID != oldValue else { return }
             Microphones.select(id: selectedMicrophoneID)
+            microphoneChanged()
         }
     }
+    /// マイクを選び直したあと（音量表示を新しいマイクに切り替えるため）
+    var microphoneChanged: () -> Void = {}
     private var loading = false
     @Published var baseFolder: URL
     /// 録音中はマイクを変えられない

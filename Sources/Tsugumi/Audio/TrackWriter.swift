@@ -47,6 +47,33 @@ final class TrackWriter {
         try wav.append(samples)
     }
 
+    /// このバッファの最大振幅（0〜1）。録音していないときの音量表示用（ファイルには書かない）。
+    /// 毎秒何百回も呼ばれるので、モノラルの配列は作らずにそのまま読む
+    static func peak(of sampleBuffer: CMSampleBuffer) throws -> Float {
+        guard let buffer = try pcmBuffer(from: sampleBuffer) else { return 0 }
+        let frames = Int(buffer.frameLength)
+        let channels = Int(buffer.format.channelCount)
+        let stride = buffer.stride
+        var peak: Float = 0
+        if let data = buffer.floatChannelData {
+            for channel in 0..<channels {
+                let samples = data[channel]
+                for frame in 0..<frames { peak = max(peak, abs(samples[frame * stride])) }
+            }
+        } else if let data = buffer.int16ChannelData {
+            for channel in 0..<channels {
+                let samples = data[channel]
+                for frame in 0..<frames { peak = max(peak, abs(Float(samples[frame * stride])) / 32768) }
+            }
+        } else if let data = buffer.int32ChannelData {
+            for channel in 0..<channels {
+                let samples = data[channel]
+                for frame in 0..<frames { peak = max(peak, abs(Float(samples[frame * stride])) / 2_147_483_648) }
+            }
+        }
+        return min(1, peak)
+    }
+
     func padToLength(frames: Int) throws {
         let gap = frames - wav.frames
         if gap > 0 { try wav.appendSilence(frames: gap) }

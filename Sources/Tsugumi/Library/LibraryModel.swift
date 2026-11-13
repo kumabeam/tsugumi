@@ -223,12 +223,19 @@ final class LibraryModel: ObservableObject {
     }
 }
 
-/// 録音中の音量。LevelMeters だけが見る
+/// 音量。LevelMeters だけが見る。録音中だけでなく、ウィンドウを開いている間は録音前から測っている
 @MainActor
 final class LevelsModel: ObservableObject {
     @Published private(set) var current = AudioLevels()
+    /// 音量を測れているか。測れていないとき（権限がまだ無いなど）はメーターを出さない
+    @Published private(set) var isLive = false
 
+    /// 見た目が変わるときだけ描き直す（0.1 秒おきに来るので、目盛りが同じなら捨てる）
     func set(_ levels: AudioLevels) {
-        if current != levels { current = levels }
+        if !current.looksSame(as: levels) { current = levels }
+    }
+
+    func setLive(_ live: Bool) {
+        if isLive != live { isLive = live }
     }
 }

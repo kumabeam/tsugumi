@@ -24,6 +24,9 @@ enum Snapshot {
         if model.items.indices.contains(index) { model.selection = model.items[index].id }
         if arguments.contains("--recording") {
             model.setRecording(since: Date().addingTimeInterval(-754))
+        }
+        if arguments.contains("--recording") || arguments.contains("--levels") {
+            model.levels.setLive(true)
             model.levels.set(AudioLevels(system: 0.3, mic: 0.02))
         }
         if arguments.contains("--model") {
@@ -66,6 +69,16 @@ enum Snapshot {
             MainActor.assumeIsolated {
                 guard let view = window.contentView,
                       let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(1) }
+                // 中身だけ写すとウィンドウの地色が入らない（ダークだと白地に白文字になる）ので、先に地色を敷く
+                if let context = NSGraphicsContext(bitmapImageRep: bitmap) {
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = context
+                    window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                        window.backgroundColor.setFill()
+                        view.bounds.fill()
+                    }
+                    NSGraphicsContext.restoreGraphicsState()
+                }
                 view.cacheDisplay(in: view.bounds, to: bitmap)
                 guard let png = bitmap.representation(using: .png, properties: [:]) else { exit(1) }
                 do {
