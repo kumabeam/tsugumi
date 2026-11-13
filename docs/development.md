@@ -19,7 +19,17 @@ scripts/package.sh              # 上の全部をやって build/Tsugumi-x.y.z.z
 
 `build-whisper.sh` を飛ばすと、アプリは Homebrew の `whisper-cpp` と `~/.cache/whisper/ggml-large-v3.bin` を探しに行く。開発中の近道で、配布物には使えない。
 
-アイコンは `scripts/make-icon.swift` が描いている（仮）。描き直したら PNG を各サイズに縮小し、`iconutil` で `Resources/AppIcon.icns` を作る。
+アイコンの元は `Resources/AppIcon.png`（2048×2048、角丸の四角は Apple のテンプレートどおり中央 824/1024 に半径 186）。差し替えたら次で `Resources/AppIcon.icns` を作り直す。
+
+```sh
+mkdir AppIcon.iconset
+for s in 16 32 128 256 512; do
+  sips -z $s $s Resources/AppIcon.png --out AppIcon.iconset/icon_${s}x${s}.png
+  sips -z $((s*2)) $((s*2)) Resources/AppIcon.png --out AppIcon.iconset/icon_${s}x${s}@2x.png
+done
+iconutil -c icns AppIcon.iconset -o Resources/AppIcon.icns
+rm -r AppIcon.iconset
+```
 
 ## 署名
 
