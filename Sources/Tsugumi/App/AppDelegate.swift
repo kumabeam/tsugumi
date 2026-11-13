@@ -714,34 +714,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
 
         guard let button = statusItem.button else { return }
-        var symbol = "waveform"
+        var image = MenuBarIcon.image()
         var title = ""
-        var tint: NSColor?
 
         switch state {
         case .recording(_, let since):
-            symbol = "record.circle.fill"
-            tint = .systemRed
+            image = MenuBarIcon.image(tint: .systemRed)
             title = " " + Self.clock(Date().timeIntervalSince(since))
         case .starting, .stopping:
-            symbol = "ellipsis.circle"
+            break
         case .idle:
             if case .downloading(let received, let total) = models.state {
-                symbol = "arrow.down.circle"
+                if let arrow = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "Tsugumi") {
+                    arrow.isTemplate = true
+                    image = arrow
+                }
                 title = total > 0 ? " \(Int(Double(received) / Double(total) * 100))%" : ""
             } else if pipeline.isBusy {
-                symbol = "text.bubble"
                 title = " \(pipeline.progress)%"
             }
         }
 
-        var image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Tsugumi")
-        if let tint {
-            image = image?.withSymbolConfiguration(.init(paletteColors: [tint]))
-            image?.isTemplate = false
-        } else {
-            image?.isTemplate = true
-        }
         button.image = image
         button.title = title
     }
