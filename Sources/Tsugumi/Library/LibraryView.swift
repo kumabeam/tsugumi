@@ -66,29 +66,35 @@ private struct Sidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             searchField
-            List(model.filtered, selection: $model.selection) { item in
-                Row(
-                    item: item,
-                    transcribingProgress: model.transcribingID == item.id ? model.progress : nil,
-                    isPending: model.isPending(item),
-                    isEditing: editingID == item.id,
-                    rename: { model.rename(item, to: $0) },
-                    endEditing: { editingID = nil }
-                )
-            }
-            .listStyle(.sidebar)
-            // 右クリックとダブルクリック。行の中に onTapGesture を置くと1クリックの選択を邪魔するので、List に付ける
-            .contextMenu(forSelectionType: String.self) { ids in
-                if let item = model.items.first(where: { $0.id == ids.first }) {
-                    if model.isPending(item) {
-                        Button("文字起こし") { model.actions.transcribe(item.session) }
-                    }
-                    Button("名前を変更") { editingID = item.id }
-                    Button("ゴミ箱に入れる") { model.pendingDelete = item }
-                        .disabled(!model.canDelete(item))
+            ScrollViewReader { proxy in
+                List(model.filtered, selection: $model.selection) { item in
+                    Row(
+                        item: item,
+                        transcribingProgress: model.transcribingID == item.id ? model.progress : nil,
+                        isPending: model.isPending(item),
+                        isEditing: editingID == item.id,
+                        rename: { model.rename(item, to: $0) },
+                        endEditing: { editingID = nil }
+                    )
                 }
-            } primaryAction: { ids in
-                editingID = ids.first
+                .listStyle(.sidebar)
+                // 右クリックとダブルクリック。行の中に onTapGesture を置くと1クリックの選択を邪魔するので、List に付ける
+                .contextMenu(forSelectionType: String.self) { ids in
+                    if let item = model.items.first(where: { $0.id == ids.first }) {
+                        if model.isPending(item) {
+                            Button("文字起こし") { model.actions.transcribe(item.session) }
+                        }
+                        Button("名前を変更") { editingID = item.id }
+                        Button("ゴミ箱に入れる") { model.pendingDelete = item }
+                            .disabled(!model.canDelete(item))
+                    }
+                } primaryAction: { ids in
+                    editingID = ids.first
+                }
+                // 録音開始やドロップで先頭に行が増えると、表示位置が元の行に合ったままで新しい行が検索欄の下に隠れる
+                .onChange(of: model.filtered.first?.id) { _, first in
+                    if let first { proxy.scrollTo(first, anchor: .top) }
+                }
             }
             // ⌘⌫ は AppDelegate のキー監視が受けて pendingDelete に入れる（SwiftUI のショートカットにすると
             // 文字入力中の ⌘⌫ まで奪ってしまうため）
