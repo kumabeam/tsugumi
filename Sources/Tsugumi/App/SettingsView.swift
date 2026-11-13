@@ -66,9 +66,17 @@ struct SettingsView: View {
     @ObservedObject var model: SettingsModel
     @AppStorage("detectMeetings") private var detectMeetings = true
     @AppStorage("autoTranscribe") private var autoTranscribe = false
+    @AppStorage(Appearance.key) private var appearance = Appearance.system
 
     var body: some View {
         Form {
+            Section("外観") {
+                Picker("テーマ", selection: $appearance) {
+                    ForEach(Appearance.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: appearance) { Appearance.apply() }
+            }
             Section("録音") {
                 Picker("マイク", selection: $model.selectedMicrophoneID) {
                     Text("macOS の設定に従う" + (model.systemDefaultName.map { "（\($0)）" } ?? ""))

@@ -18,6 +18,7 @@ enum Snapshot {
 
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
+        if arguments.contains("--dark") { application.appearance = NSAppearance(named: .darkAqua) }
 
         let model = LibraryModel(store: store)
         model.reload()

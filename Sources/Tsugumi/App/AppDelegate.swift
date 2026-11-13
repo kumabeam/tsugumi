@@ -66,7 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     // MARK: - 起動と終了
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        UserDefaults.standard.register(defaults: [Self.detectKey: true, Self.autoTranscribeKey: false])
+        UserDefaults.standard.register(defaults: [
+            Self.detectKey: true, Self.autoTranscribeKey: false, Appearance.key: Appearance.system.rawValue,
+        ])
+        Appearance.apply()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
