@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private let store = SessionStore()
     private let pipeline = Pipeline()
+    private let sleepGuard = SleepGuard()
     private let notifier = Notifier()
     private let models = ModelStore()
     private let updater = Updater()
@@ -698,6 +699,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         library.levels.setLive(live)
         if !live { library.levels.set(AudioLevels()) }
         library.setTranscribing(id: pipeline.current?.folder.path, progress: pipeline.progress)
+        // 録音中と文字起こし中は放置でスリープさせない。状態から毎回導いて、放し忘れを作らない
+        if case .idle = state {
+            sleepGuard.set(active: pipeline.current != nil, reason: "transcribing")
+        } else {
+            sleepGuard.set(active: true, reason: "recording")
+        }
         var queued = Set(pipeline.waiting.map(\.folder.path))
         if let current = pipeline.current { queued.insert(current.folder.path) }
         library.setQueued(queued)

@@ -94,3 +94,5 @@ ScreenCaptureKit ─┬─ Mac から出た音 ─→ system.wav ─┐
 .build/release/Tsugumi fetch-model <保存フォルダ>      # 初回起動と同じモデルのダウンロードを試す（約3GB）
 .build/release/Tsugumi snapshot <保存フォルダ> <出力.png> [番号] [--recording] [--model] [--find <語>] [--settings] [--pending] [--levels] [--dark]
 ```
+
+録音中・文字起こし中のスリープ防止が効いているかは `pmset -g assertions | grep Tsugumi` で見える。10分の期限付きで5分ごとに取り直しているので、放し忘れても10分で消える。アプリが終了したときはすぐ消える。
