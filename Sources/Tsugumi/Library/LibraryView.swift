@@ -23,6 +23,7 @@ struct LibraryView: View {
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 760, minHeight: 480)
+        .tint(Theme.accent)
         // ウィンドウのどこに落としても文字起こしする
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             // 全部そろってから1回で渡す（対応していないファイルの警告を1つにまとめるため）
@@ -121,10 +122,11 @@ private struct Sidebar: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").font(.body.weight(.semibold))
             TextField("タイトル、文字起こし", text: $model.search)
                 .textFieldStyle(.plain)
+                .font(.body)
                 .focused($searchFocused)
                 .background {
                     // ⌥⌘F で一覧の検索欄へ
@@ -142,10 +144,10 @@ private struct Sidebar: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 14)
+        .frame(height: Theme.controlHeight)
+        .glassCapsule()
+        .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
 }
@@ -208,7 +210,7 @@ private struct Row: View {
     private var status: some View {
         switch item.session.meta.status {
         case .recording:
-            Text("録音中").foregroundStyle(.red)
+            Text("録音中").foregroundStyle(Theme.live)
         case .recorded:
             if let transcribingProgress {
                 Text("文字起こし \(transcribingProgress)%")
@@ -258,19 +260,7 @@ private struct RecordBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Button(action: model.actions.toggleRecording) {
-                ZStack {
-                    Circle()
-                        .strokeBorder(.secondary.opacity(0.6), lineWidth: 2)
-                        .frame(width: 44, height: 44)
-                    if model.recordingSince != nil {
-                        RoundedRectangle(cornerRadius: 4).fill(.red).frame(width: 18, height: 18)
-                    } else {
-                        Circle().fill(.red).frame(width: 34, height: 34)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
+            RecordButton(recording: model.recordingSince != nil, size: 44, action: model.actions.toggleRecording)
 
             if let since = model.recordingSince {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -291,12 +281,9 @@ private struct RecordBar: View {
             microphoneMenu
         }
         .overlay(alignment: .trailing) {
-            Button(action: model.actions.chooseFiles) {
-                Image(systemName: "doc.badge.plus")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.secondary)
+            GlassGroup {
+                Button(action: model.actions.chooseFiles) { Image(systemName: "doc.badge.plus") }
             }
-            .buttonStyle(.plain)
             .padding(.trailing, 12)
         }
     }
@@ -551,22 +538,14 @@ private struct Detail: View {
                     Label(copied ? "コピーしました" : "文字起こしをコピー", systemImage: copied ? "checkmark" : "doc.on.doc")
                         .frame(minWidth: 150)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(GlassCapsuleButtonStyle(role: .regular))
             }
-            Button {
-                model.revealInFinder(item)
-            } label: {
-                Image(systemName: "folder").frame(minWidth: 24)
+            GlassGroup {
+                Button { model.revealInFinder(item) } label: { Image(systemName: "folder") }
+                Button { confirmingDelete = true } label: { Image(systemName: "trash") }
+                    .disabled(!model.canDelete(item))
             }
-
-            Button {
-                confirmingDelete = true
-            } label: {
-                Image(systemName: "trash").frame(minWidth: 24)
-            }
-            .disabled(!model.canDelete(item))
         }
-        .controlSize(.large)
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
     }
@@ -601,13 +580,9 @@ private struct Detail: View {
                     Button {
                         model.actions.transcribe(item.session)
                     } label: {
-                        Label("文字起こしを始める", systemImage: "text.quote")
-                            .font(.title3)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 8)
+                        Label("文字起こし", systemImage: "square.and.pencil")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
+                    .buttonStyle(GlassCapsuleButtonStyle())
                 } else {
                     if model.transcribingID == item.id {
                         ProgressView(value: Double(model.progress), total: 100).frame(width: 220)
@@ -618,6 +593,8 @@ private struct Detail: View {
                             .foregroundStyle(.secondary)
                     }
                     Button("中止") { model.actions.cancelTranscription(item.session) }
+                        .buttonStyle(GlassCapsuleButtonStyle(role: .regular))
+                        .padding(.top, 6)
                 }
             }
         case .cancelled:
@@ -625,6 +602,8 @@ private struct Detail: View {
                 Image(systemName: "stop.circle").font(.largeTitle).foregroundStyle(.secondary)
                 Text("文字起こしを中止しました")
                 Button("やり直す") { model.actions.retry(item.session) }
+                    .buttonStyle(GlassCapsuleButtonStyle(role: .regular))
+                    .padding(.top, 6)
             }
         case .failed:
             VStack(spacing: 10) {
@@ -636,6 +615,8 @@ private struct Detail: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
                 Button("やり直す") { model.actions.retry(item.session) }
+                    .buttonStyle(GlassCapsuleButtonStyle(role: .regular))
+                    .padding(.top, 6)
             }
         }
     }
@@ -706,10 +687,10 @@ private struct LineRow: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(isCurrent ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .background(isCurrent ? Theme.accent.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 6))
         .overlay {
             if isJumpTarget {
-                RoundedRectangle(cornerRadius: 6).strokeBorder(Color.orange, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.accent, lineWidth: 2)
             }
         }
         .contentShape(Rectangle())
@@ -717,8 +698,8 @@ private struct LineRow: View {
 
     private func labelColor(_ label: String) -> Color {
         switch label {
-        case "相手": return .blue
-        case "自分": return .green
+        case "相手": return Theme.partner
+        case "自分": return Theme.me
         default: return .gray
         }
     }

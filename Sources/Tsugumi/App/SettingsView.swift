@@ -124,6 +124,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .tint(Theme.accent)
         .frame(width: 480)
         .fixedSize(horizontal: false, vertical: true)
         .task {
