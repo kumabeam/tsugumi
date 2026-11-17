@@ -131,7 +131,7 @@ private struct Sidebar: View {
                 .focused($searchFocused)
                 .background {
                     // ⌥⌘F で一覧の検索欄へ
-                    Button("") { searchFocused = true }
+                    Button("一覧を検索") { searchFocused = true }
                         .keyboardShortcut("f", modifiers: [.command, .option])
                         .opacity(0)
                         .accessibilityHidden(true)
@@ -366,8 +366,6 @@ private struct Detail: View {
     @State private var title = ""
     @State private var copied = false
     @State private var confirmingDelete = false
-    /// 検索で今見ている一致（matches の何番目か）
-    @State private var matchPosition = 0
     /// 検索で飛ぶ先の行
     @State private var jumpTarget: Int?
     @FocusState private var titleFocused: Bool
@@ -379,25 +377,20 @@ private struct Detail: View {
     /// jumpTarget がどの録音のものか（録音を切り替えた直後に、前の録音の行へ飛ばないため）
     @State private var jumpFor: String?
 
-    /// 検索語を含む行
-    private var matches: [Int] {
-        let query = model.highlightQuery
-        guard !query.isEmpty else { return [] }
-        return model.lines.filter { TextSearch.contains($0.text, query) }.map(\.id)
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             header
-            if model.isFinding, item.session.meta.status == .done {
-                Divider()
-                findBar
-            }
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // 録音を切り替えたら、文字起こしのスクロール位置を頭に戻す
                 .id(item.id)
+                // ⌘F の検索欄。本文を押し下げず、右上に浮かべる
+                .overlay(alignment: .topTrailing) {
+                    if model.isFinding, item.session.meta.status == .done {
+                        findBar.padding(12)
+                    }
+                }
             if LibraryModel.playableAudio(of: item.session) != nil {
                 Divider()
                 PlayerBar(player: player, peaks: model.waveformPeaks)
@@ -406,7 +399,7 @@ private struct Detail: View {
         .onAppear {
             title = item.title
             // 一覧の検索から来たときは、最初に見つかった行へ
-            jump(to: matches.first)
+            jump(to: model.matches.first)
         }
         .onChange(of: item.id) { old, _ in
             // 同じ録音のフォルダ名が変わっただけなら、打っている途中の名前はそのまま
@@ -420,12 +413,18 @@ private struct Detail: View {
             title = item.title
             copied = false
             confirmingDelete = false
-            matchPosition = 0
-            jump(to: matches.first)
+            model.matchPosition = 0
+            jump(to: model.matches.first)
         }
         .onChange(of: model.highlightQuery) { _, _ in
-            matchPosition = 0
-            jump(to: matches.first)
+            model.matchPosition = 0
+            jump(to: model.matches.first)
+        }
+        .onChange(of: model.matchPosition) { _, position in
+            // Enter や ⌘G で一致を移ったら、その行へ
+            let found = model.matches
+            guard found.indices.contains(position) else { return }
+            jump(to: found[position])
         }
         .background { shortcuts }
         .onChange(of: titleFocused) { _, focused in
@@ -478,47 +477,49 @@ private struct Detail: View {
         findFocused = false
     }
 
-    /// 次（+1）／前（-1）の一致へ移る。端まで行ったら反対側に回る
-    private func step(_ direction: Int) {
-        let found = matches
-        guard !found.isEmpty else { return }
-        matchPosition = (matchPosition + direction + found.count) % found.count
-        jump(to: found[matchPosition])
-    }
-
+    /// 右上に浮かぶ、文字起こしの中の検索。Enter で次、⇧Enter で前、Esc で閉じる
     private var findBar: some View {
-        let found = matches
+        let count = model.matches.count
         return HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").font(.body.weight(.semibold))
             TextField("文字起こしの中を検索", text: $model.findText)
                 .textFieldStyle(.plain)
+                .font(.body)
+                .frame(width: 180)
                 .focused($findFocused)
-                .onSubmit {
-                    step(1)
-                    findFocused = true
+                .onSubmit { model.stepMatch(1) }
+                .onKeyPress(.return, phases: .down) { press in
+                    guard press.modifiers.contains(.shift) else { return .ignored }
+                    model.stepMatch(-1)
+                    return .handled
                 }
             if !model.highlightQuery.isEmpty {
-                Text(found.isEmpty ? "見つかりません" : "\(min(matchPosition, found.count - 1) + 1) / \(found.count) 行")
+                Text(count == 0 ? "0" : "\(min(model.matchPosition, count - 1) + 1) / \(count)")
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            Button { step(-1) } label: { Image(systemName: "chevron.up") }
-                .disabled(found.isEmpty)
-            Button { step(1) } label: { Image(systemName: "chevron.down") }
-                .disabled(found.isEmpty)
-            Button("完了") { closeFind() }
+            Button { model.stepMatch(-1) } label: { Image(systemName: "chevron.up") }
+                .disabled(count == 0)
+            Button { model.stepMatch(1) } label: { Image(systemName: "chevron.down") }
+                .disabled(count == 0)
+            Button { closeFind() } label: { Image(systemName: "xmark") }
                 .keyboardShortcut(.cancelAction)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
+        .buttonStyle(GlassIconButtonStyle())
+        .padding(.leading, 14)
+        .padding(.trailing, 4)
+        .frame(height: Theme.controlHeight)
+        .glassCapsule()
     }
 
-    /// 画面には出さない、キー操作だけのボタン
+    /// 画面には出さない、キー操作だけのボタン。題名は別々にする（同じだとショートカットの振り分けが混ざる）
     private var shortcuts: some View {
         Group {
-            Button("") { openFind() }.keyboardShortcut("f", modifiers: .command)
-            Button("") { step(1) }.keyboardShortcut("g", modifiers: .command)
-            Button("") { step(-1) }.keyboardShortcut("g", modifiers: [.command, .shift])
+            Button("検索") { openFind() }.keyboardShortcut("f", modifiers: .command)
+            Button("次の一致") { model.stepMatch(1) }.keyboardShortcut("g", modifiers: .command)
+            Button("前の一致") { model.stepMatch(-1) }.keyboardShortcut("g", modifiers: [.command, .shift])
         }
         .opacity(0)
         .accessibilityHidden(true)

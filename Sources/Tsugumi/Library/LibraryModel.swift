@@ -53,16 +53,38 @@ final class LibraryModel: ObservableObject {
         var toggleMute: () -> Void = {}
     }
 
-    @Published private(set) var items: [Item] = []
+    @Published private(set) var items: [Item] = [] {
+        didSet { updateFiltered() }
+    }
+    /// 検索語で絞り込んだ一覧。items と search が変わったときだけ作り直す（描き直しのたびに全文を見ない）
+    @Published private(set) var filtered: [Item] = []
     @Published var selection: String? {
         didSet { if selection != oldValue { loadSelection() } }
     }
-    @Published var search = ""
+    @Published var search = "" {
+        didSet {
+            if search != oldValue {
+                updateFiltered()
+                updateMatches()
+            }
+        }
+    }
+    /// ⌘F の、文字起こしの中の検索。一覧は絞り込まない
+    @Published var isFinding = false {
+        didSet { if isFinding != oldValue { updateMatches() } }
+    }
+    @Published var findText = "" {
+        didSet { if findText != oldValue { updateMatches() } }
+    }
     /// 文字起こしの中の検索（⌘F）
-    @Published var isFinding = false
-    @Published var findText = ""
+    /// 検索で今見ている一致（matches の何番目か）
+    @Published var matchPosition = 0
     /// 選んでいる録音の文字起こし
-    @Published private(set) var lines: [TranscriptLine] = []
+    @Published private(set) var lines: [TranscriptLine] = [] {
+        didSet { updateMatches() }
+    }
+    /// 選んでいる録音の文字起こしで、検索語を含む行。search と lines が変わったときだけ数え直す
+    @Published private(set) var matches: [Int] = []
     @Published private(set) var recordingSince: Date?
     /// 録音中の音量（1秒おきに更新）。毎秒ウィンドウ全体を描き直さないよう、別のオブジェクトにしてある
     let levels = LevelsModel()
@@ -101,20 +123,34 @@ final class LibraryModel: ObservableObject {
         return find.isEmpty ? search.trimmingCharacters(in: .whitespaces) : find
     }
 
+    private func updateMatches() {
+        let query = highlightQuery
+        let found = query.isEmpty ? [] : lines.filter { TextSearch.contains($0.text, query) }.map(\.id)
+        if found != matches { matches = found }
+    }
+
+    /// 次（+1）／前（-1）の一致へ移る。端まで行ったら反対側に回る
+    func stepMatch(_ direction: Int) {
+        let count = matches.count
+        guard count > 0 else { return }
+        matchPosition = (matchPosition + direction + count) % count
+    }
+
     var selectedItem: Item? {
         items.first { $0.id == selection }
     }
 
-    /// 検索語で絞り込んだ一覧。タイトルと文字起こしの中身の両方を見る。
-    var filtered: [Item] {
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return items }
-        return items.filter { $0.title.lowercased().contains(query) || transcriptText(of: $0).contains(query) }
+    /// タイトルと文字起こしの中身の両方を見る。一致の数え方（大文字小文字・全角半角を区別しない）は本文の検索と同じ
+    private func updateFiltered() {
+        let query = search.trimmingCharacters(in: .whitespaces)
+        let result = query.isEmpty ? items
+            : items.filter { TextSearch.contains($0.title, query) || TextSearch.contains(transcriptText(of: $0), query) }
+        filtered = result
     }
 
     private func transcriptText(of item: Item) -> String {
         if let cached = searchCache[item.id] { return cached }
-        let text = ((try? String(contentsOf: item.session.transcriptURL, encoding: .utf8)) ?? "").lowercased()
+        let text = (try? String(contentsOf: item.session.transcriptURL, encoding: .utf8)) ?? ""
         searchCache[item.id] = text
         return text
     }
