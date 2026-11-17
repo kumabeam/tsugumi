@@ -19,7 +19,8 @@ enum CommandLineMode {
                     let audio = try SelfTest.run(folder: folder)
                     let queue = try await SelfTest.runQueueGuard(folder: folder)
                     let cancel = try await SelfTest.runCancel(folder: folder)
-                    exit(audio && queue && cancel ? 0 : 1)
+                    let rename = try SelfTest.runRename(folder: folder)
+                    exit(audio && queue && cancel && rename ? 0 : 1)
                 }
                 if arguments[0] == "fetch-model", arguments.count == 2 {
                     exit(await fetchModel(into: URL(fileURLWithPath: arguments[1])) ? 0 : 1)

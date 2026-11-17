@@ -88,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         pipeline.onChange = { [weak self] in self?.render() }
         pipeline.onFinished = { [weak self] session, error in self?.transcriptionFinished(session, error: error) }
+        pipeline.onPrepared = { [weak self] session in self?.syncFolderName(session) }
         notifier.onStartRequested = { [weak self] in self?.startRecording() }
         notifier.onOpenSession = { [weak self] folder in self?.showLibrary(selecting: folder) }
         library.actions = .init(
@@ -150,7 +151,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func showLibrary(selecting folder: URL? = nil) {
         library.reload()
-        if let folder { library.selection = folder.path }
+        // 通知からの呼び出しは、その後に名前が変わって別のフォルダ名になっていることがある
+        if let folder, library.items.contains(where: { $0.id == folder.path }) { library.selection = folder.path }
 
         if libraryWindow == nil {
             let window = NSWindow(
@@ -439,6 +441,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         state = .stopping
         Task {
             await recorder.stop()
+            if let onDisk = Session.load(folder: session.folder) { session.meta.title = onDisk.meta.title }
             session.meta.status = .recorded
             try? session.save()
             sender.reply(toApplicationShouldTerminate: true)
@@ -448,6 +451,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     /// 前回、録音中や文字起こし中に終わってしまった分を拾い直す。
     private func resumeUnfinished() {
+        // 名前だけ付いていてフォルダ名が古いままの録音を合わせる。文字起こしに回る可能性があるものは触らない
+        for session in store.sessions(with: [.done, .failed, .cancelled]) {
+            _ = try? store.renameFolder(of: session)
+        }
         var crashed = false
         let queuedBefore = Set(UserDefaults.standard.stringArray(forKey: Self.queuedKey) ?? [])
         for var session in store.sessions(with: [.recording, .recorded]) {
@@ -595,8 +602,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func finishRecording(_ recorded: Session) {
         var session = recorded
         recorder = nil
+        // 録音中に付けられた名前を、録音開始時の内容で上書きしない
+        if let onDisk = Session.load(folder: session.folder) { session.meta.title = onDisk.meta.title }
         session.meta.status = .recorded
         try? session.save()
+        // 録音中に付けられた名前にフォルダ名を合わせる。文字起こしがフォルダを使い始める前に済ませる
+        let wasSelected = library.selection == recorded.folder.path
+        if let moved = try? store.renameFolder(of: session) { session = moved }
         state = .idle
         if autoTranscribe {
             pipeline.enqueue(session)
@@ -604,7 +616,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             // 文字起こしは後回しでも、すぐ聞き返せるようにする
             pipeline.makeListeningCopy(for: session)
         }
-        library.reload()
+        library.reload(selecting: wasSelected ? session.folder.path : nil)
         render()
         startMonitorIfNeeded()
     }
@@ -643,8 +655,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
-    private func transcriptionFinished(_ session: Session, error: Error?) {
-        library.reload()
+    /// 付けた名前にフォルダ名を合わせて一覧を読み直す。フォルダの中を使っている最中なら名前は触らない
+    @discardableResult
+    private func syncFolderName(_ session: Session) -> Session {
+        // 名前は作業の間に変わっていることがあるので、ディスクの内容で付ける。
+        // 消されて同じフォルダ名で別の録音が始まっていたら触らない
+        guard !pipeline.isQueued(folder: session.folder), !pipeline.isPreparing(folder: session.folder),
+              let onDisk = Session.load(folder: session.folder), onDisk.meta.status != .recording,
+              abs(onDisk.meta.startedAt.timeIntervalSince(session.meta.startedAt)) < 1,
+              let moved = try? store.renameFolder(of: onDisk) else {
+            library.reload()
+            return session
+        }
+        library.reload(selecting: library.selection == session.folder.path ? moved.folder.path : nil)
+        return moved
+    }
+
+    private func transcriptionFinished(_ finished: Session, error: Error?) {
+        // 文字起こし中に付けられた名前にフォルダ名を合わせる
+        let session = syncFolderName(finished)
         // 自分で止めたものは知らせない
         guard session.meta.status != .cancelled else { return }
         if let error {
@@ -708,6 +737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         var queued = Set(pipeline.waiting.map(\.folder.path))
         if let current = pipeline.current { queued.insert(current.folder.path) }
         library.setQueued(queued)
+        library.setBusy(queued.union(pipeline.preparingFolders))
         if queued != savedQueue {
             savedQueue = queued
             UserDefaults.standard.set(Array(queued).sorted(), forKey: Self.queuedKey)

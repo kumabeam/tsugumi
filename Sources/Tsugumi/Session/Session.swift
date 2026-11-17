@@ -87,25 +87,49 @@ final class SessionStore {
         UserDefaults.standard.set(url.path, forKey: Self.folderKey)
     }
 
-    func create(source: Session.Source, startedAt: Date, originalFile: URL? = nil) throws -> Session {
+    /// フォルダ名。日時のあとに、取り込み元のファイル名か付けた名前を添える
+    static func folderName(startedAt: Date, label: String?) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd_HHmm"
         var name = formatter.string(from: startedAt)
-        if let originalFile {
-            let base = originalFile.deletingPathExtension().lastPathComponent
-                .components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-")
-            name += "_" + String(base.prefix(40))
+        if let label {
+            let safe = String(label.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-").prefix(40))
+                .trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+            if !safe.isEmpty { name += "_" + safe }
         }
+        return name
+    }
 
+    /// 同名のフォルダがあれば -2, -3 と番号を足す。自分のフォルダ（大文字小文字だけの違いも含む）は空いている扱い
+    private func vacantFolder(named name: String, except current: URL? = nil) -> URL {
         let files = FileManager.default
+        func isCurrent(_ url: URL) -> Bool { url.lastPathComponent.lowercased() == current?.lastPathComponent.lowercased() }
         var folder = baseFolder.appendingPathComponent(name)
         var suffix = 2
-        while files.fileExists(atPath: folder.path) {
+        while !isCurrent(folder), files.fileExists(atPath: folder.path) {
             folder = baseFolder.appendingPathComponent("\(name)-\(suffix)")
             suffix += 1
         }
-        try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        if let current, isCurrent(folder) { return current }
+        return folder
+    }
+
+    /// 付けた名前に合わせてフォルダ名を付け替える。中のファイルを使っている最中（録音中・文字起こし中）には呼ばない
+    func renameFolder(of session: Session) throws -> Session {
+        // 名前がなければ、取り込んだときの元ファイル名に戻る
+        let original = session.meta.originalFile.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
+        let name = Self.folderName(startedAt: session.meta.startedAt, label: session.meta.title ?? original)
+        let folder = vacantFolder(named: name, except: session.folder)
+        guard folder.path != session.folder.path else { return session }
+        try FileManager.default.moveItem(at: session.folder, to: folder)
+        return Session(folder: folder, meta: session.meta)
+    }
+
+    func create(source: Session.Source, startedAt: Date, originalFile: URL? = nil) throws -> Session {
+        let name = Self.folderName(startedAt: startedAt, label: originalFile?.deletingPathExtension().lastPathComponent)
+        let folder = vacantFolder(named: name)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
         let session = Session(folder: folder, meta: .init(
             startedAt: startedAt,

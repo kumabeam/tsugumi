@@ -52,6 +52,63 @@ enum SelfTest {
         return passed
     }
 
+    /// 名前を付けたときのフォルダ名の付け替え
+    static func runRename(folder: URL) throws -> Bool {
+        let base = folder.appendingPathComponent("rename")
+        try? FileManager.default.removeItem(at: base)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let store = SessionStore(baseFolder: base)
+        var passed = true
+        func check(_ name: String, _ condition: Bool, _ detail: String) {
+            print("\(condition ? "OK  " : "NG  ") \(name) … \(detail)")
+            if !condition { passed = false }
+        }
+        let started = Date(timeIntervalSince1970: 1_800_000_000)
+        let stamp = SessionStore.folderName(startedAt: started, label: nil)
+
+        var session = try store.create(source: .recording, startedAt: started)
+        session.meta.title = "定例 / 11:00"
+        try session.save()
+        session = try store.renameFolder(of: session)
+        check("名前をフォルダ名に付ける", session.folder.lastPathComponent == "\(stamp)_定例 - 11-00"
+              && FileManager.default.fileExists(atPath: session.folder.appendingPathComponent(Session.metaFile).path),
+              session.folder.lastPathComponent)
+
+        // 同じ名前の別フォルダがあれば番号を足し、自分自身は数えない
+        var other = try store.create(source: .recording, startedAt: started)
+        other.meta.title = "定例 / 11:00"
+        try other.save()
+        other = try store.renameFolder(of: other)
+        check("同名なら番号を足す", other.folder.lastPathComponent == "\(stamp)_定例 - 11-00-2", other.folder.lastPathComponent)
+        let again = try store.renameFolder(of: session)
+        check("同じ名前なら動かさない", again.folder == session.folder, again.folder.lastPathComponent)
+        let againOther = try store.renameFolder(of: other)
+        check("番号付きも動かさない", againOther.folder == other.folder, againOther.folder.lastPathComponent)
+
+        // 取り込んだものは、名前がなければ元のファイル名のまま
+        var imported = try store.create(source: .imported, startedAt: started, originalFile: URL(fileURLWithPath: "/tmp/会議.m4a"))
+        imported = try store.renameFolder(of: imported)
+        check("取り込みは元のファイル名を保つ", imported.folder.lastPathComponent == "\(stamp)_会議", imported.folder.lastPathComponent)
+        imported.meta.title = "顧客"
+        imported = try store.renameFolder(of: imported)
+        imported.meta.title = nil
+        imported = try store.renameFolder(of: imported)
+        check("取り込みの名前を消すと元のファイル名に戻る", imported.folder.lastPathComponent == "\(stamp)_会議", imported.folder.lastPathComponent)
+
+        // 大文字小文字だけの違いは動かさない（同じフォルダ扱いになる）
+        session.meta.title = "ABC"
+        session = try store.renameFolder(of: session)
+        session.meta.title = "abc"
+        let cased = try store.renameFolder(of: session)
+        check("大文字小文字だけなら動かさない", cased.folder == session.folder, cased.folder.lastPathComponent)
+
+        // 名前を消したら日時だけに戻る
+        session.meta.title = nil
+        session = try store.renameFolder(of: session)
+        check("名前を消すと日時だけに戻る", session.folder.lastPathComponent == stamp, session.folder.lastPathComponent)
+        return passed
+    }
+
     /// 文字起こし待ちの間に録音が消され、同じ名前のフォルダで次の録音が始まったとき、
     /// 待ち行列に残った古い録音が、録音中のフォルダに手を出さないことを確かめる。
     @MainActor

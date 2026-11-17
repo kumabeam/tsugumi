@@ -37,10 +37,10 @@ macOS 15 以上の Apple Silicon Mac。
 
 ## 出力
 
-`~/Documents/Tsugumi/` に会議ごとのフォルダができる。
+`~/Documents/Tsugumi/` に会議ごとのフォルダができる。一覧で名前を付けると、フォルダ名にも付く。
 
 ```
-2026-11-09_1430/
+2026-11-09_1430_定例/
 ├── transcript.md   文字起こし（時刻と「相手／自分」付き）
 ├── audio.m4a       録音（聞き返し用。1時間で約35MB）
 ├── session.json    状態の記録

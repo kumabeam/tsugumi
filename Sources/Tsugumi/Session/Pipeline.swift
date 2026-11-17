@@ -7,6 +7,8 @@ final class Pipeline {
     var onChange: (() -> Void)?
     /// 1件終わったとき。失敗なら error が入る
     var onFinished: ((Session, Error?) -> Void)?
+    /// 聞き返し用の音声ができた（文字起こしとは別に作ったとき）
+    var onPrepared: ((Session) -> Void)?
 
     private(set) var waiting: [Session] = []
     private(set) var current: Session?
@@ -74,6 +76,8 @@ final class Pipeline {
         var session = waiting.remove(at: index)
         onChange?()
         guard Self.isSameRecording(session, allowing: [.recorded]) else { return }
+        // 順番待ちの間に付けられた名前を、古い内容で上書きしない
+        if let onDisk = Session.load(folder: session.folder) { session.meta.title = onDisk.meta.title }
         session.meta.status = .cancelled
         session.meta.error = nil
         try? session.save()
@@ -211,6 +215,10 @@ final class Pipeline {
 
     private nonisolated static let whisperInput = "whisper-input.wav"
 
+    /// 聞き返し用の音声を作っている最中（フォルダの中のファイルを触っている）
+    func isPreparing(folder: URL) -> Bool { listeningTasks[folder.path] != nil }
+    var preparingFolders: Set<String> { Set(listeningTasks.keys) }
+
     /// 文字起こしを待たずに、聞き返し用の音声（audio.m4a）だけ先に作る。
     /// 録音が終わった直後に呼ぶ。文字起こしを後回しにしていても再生できるようにするため
     func makeListeningCopy(for session: Session) {
@@ -224,6 +232,7 @@ final class Pipeline {
             await MainActor.run { [weak self] in
                 self?.listeningTasks[key] = nil
                 self?.onChange?()
+                self?.onPrepared?(session)
             }
         }
     }

@@ -67,6 +67,8 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var transcribingID: String?
     /// 文字起こしの処理中か順番待ちの録音
     @Published private(set) var queuedIDs: Set<String> = []
+    /// 文字起こしや聞き返し用の音声作りで、フォルダの中を使っている録音
+    private var busyIDs: Set<String> = []
     @Published private(set) var progress = 0
     /// 文字起こしモデルの準備状況。揃っていれば nil
     @Published private(set) var modelStatus: String?
@@ -113,9 +115,16 @@ final class LibraryModel: ObservableObject {
     // MARK: - 読み込み
 
     /// フォルダを読み直す。録音や文字起こしの状態が変わるたびに呼ぶ。
-    func reload() {
+    /// - Parameter selecting: 選んでいる録音のフォルダ名が変わったときの新しい id。選んだ状態と再生位置を保つ
+    func reload(selecting id: String? = nil) {
         searchCache.removeAll()
         items = store.sessions(with: [.recording, .recorded, .done, .failed, .cancelled]).reversed().map(Item.init)
+        if let id, id != selection {
+            let position = player.currentTime
+            let playing = player.isPlaying
+            selection = id
+            if position > 0 { player.seek(to: position, play: playing) }
+        }
         if !items.contains(where: { $0.id == selection }) {
             selection = items.first?.id
         }
@@ -165,6 +174,8 @@ final class LibraryModel: ObservableObject {
         if modelFailed != failed { modelFailed = failed }
     }
 
+    func setBusy(_ ids: Set<String>) { busyIDs = ids }
+
     func setQueued(_ ids: Set<String>) {
         if queuedIDs != ids { queuedIDs = ids }
     }
@@ -190,7 +201,14 @@ final class LibraryModel: ObservableObject {
         guard new != session.meta.title else { return }
         session.meta.title = new
         try? session.save()
-        reload()
+        // 中のファイルを使っていない間だけフォルダ名も合わせる。録音中・文字起こし中のものは終わったときに合わせる
+        guard isIdle(item), let moved = try? store.renameFolder(of: session) else { return reload() }
+        reload(selecting: selection == item.id ? moved.folder.path : nil)
+    }
+
+    /// 録音も文字起こしもしていない（フォルダの中を誰も触っていない）
+    private func isIdle(_ item: Item) -> Bool {
+        item.session.meta.status != .recording && !busyIDs.contains(item.id) && transcribingID != item.id
     }
 
     func copyTranscript(of item: Item) {

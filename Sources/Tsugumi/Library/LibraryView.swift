@@ -377,6 +377,8 @@ private struct Detail: View {
     @FocusState private var findFocused: Bool
     /// タイトルを打ち始めたときの録音の id。別の録音に切り替えた直後にフォーカスが外れても、元の録音に書く
     @State private var editingTitleOf: String?
+    /// 同じ録音のフォルダ名が変わって id が変わっても、打っている名前をその録音に書くための印
+    @State private var editingTitleStarted: Date?
     /// jumpTarget がどの録音のものか（録音を切り替えた直後に、前の録音の行へ飛ばないため）
     @State private var jumpFor: String?
 
@@ -409,7 +411,12 @@ private struct Detail: View {
             // 一覧の検索から来たときは、最初に見つかった行へ
             jump(to: matches.first)
         }
-        .onChange(of: item.id) { _, _ in
+        .onChange(of: item.id) { old, _ in
+            // 同じ録音のフォルダ名が変わっただけなら、打っている途中の名前はそのまま
+            if editingTitleOf == old, editingTitleStarted == item.session.meta.startedAt {
+                editingTitleOf = item.id
+                return
+            }
             // 別の録音に切り替わった。ビューは作り直さない（分割ビューの幅が戻るため）ので、状態をここで戻す
             commitTitle()
             titleFocused = false
@@ -425,7 +432,12 @@ private struct Detail: View {
         }
         .background { shortcuts }
         .onChange(of: titleFocused) { _, focused in
-            if focused { editingTitleOf = item.id } else { commitTitle() }
+            if focused {
+                editingTitleOf = item.id
+                editingTitleStarted = item.session.meta.startedAt
+            } else {
+                commitTitle()
+            }
         }
         .onChange(of: item.title) { _, new in
             // 一覧側で名前を変えたら、こちらの表示も合わせる（打っている最中は触らない）
@@ -439,9 +451,14 @@ private struct Detail: View {
 
     private func commitTitle() {
         guard let id = editingTitleOf else { return }
+        let started = editingTitleStarted
         editingTitleOf = nil
-        // 打ち始めたときの Item をそのまま使わない（その間に録音の状態が進んでいると、古い状態を書き戻してしまう）
-        guard let target = model.items.first(where: { $0.id == id }), title != target.title else { return }
+        editingTitleStarted = nil
+        // 打ち始めたときの Item をそのまま使わない（その間に録音の状態が進んでいると、古い状態を書き戻してしまう）。
+        // フォルダ名が変わって id が見つからなければ、開始日時で同じ録音を探す
+        let sameStart = model.items.filter { $0.session.meta.startedAt == started }
+        let found = model.items.first(where: { $0.id == id }) ?? (sameStart.count == 1 ? sameStart.first : nil)
+        guard let target = found, title != target.title else { return }
         model.rename(target, to: title)
     }
 
