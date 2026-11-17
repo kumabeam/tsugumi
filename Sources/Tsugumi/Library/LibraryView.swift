@@ -105,6 +105,7 @@ private struct Sidebar: View {
                 presenting: model.pendingDelete
             ) { item in
                 Button("ゴミ箱に入れる", role: .destructive) { model.moveToTrash(item) }
+                    .keyboardShortcut(.defaultAction)
                 Button("キャンセル", role: .cancel) {}
             }
             .overlay {
@@ -441,6 +442,7 @@ private struct Detail: View {
         }
         .confirmationDialog("「\(item.title)」をゴミ箱に入れますか？", isPresented: $confirmingDelete) {
             Button("ゴミ箱に入れる", role: .destructive) { model.moveToTrash(item) }
+                .keyboardShortcut(.defaultAction)
             Button("キャンセル", role: .cancel) {}
         }
     }
