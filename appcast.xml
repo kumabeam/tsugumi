@@ -3,14 +3,14 @@
     <channel>
         <title>Tsugumi</title>
         <item>
-            <title>0.2.5</title>
-            <pubDate>Fri, 13 Nov 2026 21:04:51 +0900</pubDate>
+            <title>0.3.0</title>
+            <pubDate>Tue, 17 Nov 2026 23:17:05 +0900</pubDate>
             <link>https://github.com/kumabeam/tsugumi/releases</link>
-            <sparkle:version>7</sparkle:version>
-            <sparkle:shortVersionString>0.2.5</sparkle:shortVersionString>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/kumabeam/tsugumi/releases/download/v0.2.5/Tsugumi-0.2.5.zip" length="5091007" type="application/octet-stream" sparkle:edSignature="i1QWWoGxXZHdk/Asc1HU3l6jiCUU2iDvpSJ8dWMcdsxFlXAOMXHSTdKCunt4z2MXrLTy3yRHBOI1oqe7C1anDw=="/>
+            <enclosure url="https://github.com/kumabeam/tsugumi/releases/download/v0.3.0/Tsugumi-0.3.0.zip" length="5169672" type="application/octet-stream" sparkle:edSignature="z/yVABwB+/IJJUHw378UpRsKWY7ZRVhQ8/GPTbRtnQ1XZqSfdNlhIb9ycXU8PQYU4CeiwW9TV1F2OkbqRMACBw=="/>
         </item>
     </channel>
 </rss>
