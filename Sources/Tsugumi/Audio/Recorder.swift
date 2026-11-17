@@ -49,6 +49,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     private var stopping = false
     private var finished = false
     private var writeError: Error?
+    private let mutedFlag = Locked(false)
+
+    /// マイクのミュート。true の間は自分のトラックを無音で書く（相手の音はそのまま）
+    var isMuted: Bool {
+        get { mutedFlag.withValue { $0 } }
+        set { mutedFlag.withValue { $0 = newValue } }
+    }
 
     /// - Parameter microphoneID: 使うマイク。nil なら macOS の「サウンド」設定で選ばれているもの
     func start(folder: URL, microphoneID: String? = nil) async throws {
@@ -143,7 +150,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         }
         guard let origin else { return }
         do {
-            try track.append(sampleBuffer, origin: origin, elapsed: now - wallStart)
+            try track.append(sampleBuffer, origin: origin, elapsed: now - wallStart, muted: type == .microphone && isMuted)
         } catch {
             if writeError == nil {
                 writeError = error

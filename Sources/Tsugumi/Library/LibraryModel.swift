@@ -49,6 +49,8 @@ final class LibraryModel: ObservableObject {
         var selectMicrophone: (String?) -> Void = { _ in }
         /// 未処理の録音の文字起こしを始める
         var transcribe: (Session) -> Void = { _ in }
+        /// マイクのミュートを切り替える
+        var toggleMute: () -> Void = {}
     }
 
     @Published private(set) var items: [Item] = []
@@ -64,6 +66,8 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var recordingSince: Date?
     /// 録音中の音量（1秒おきに更新）。毎秒ウィンドウ全体を描き直さないよう、別のオブジェクトにしてある
     let levels = LevelsModel()
+    let waveform = WaveformModel()
+    @Published private(set) var isMuted = false
     @Published private(set) var transcribingID: String?
     /// 文字起こしの処理中か順番待ちの録音
     @Published private(set) var queuedIDs: Set<String> = []
@@ -82,6 +86,9 @@ final class LibraryModel: ObservableObject {
     private let store: SessionStore
     private var loadedKey = ""
     private var loadedAudioKey = ""
+    /// 選んでいる録音の波形（再生バーの下地）。無ければ音声から作って保存する
+    @Published private(set) var waveformPeaks: [AudioLevels] = []
+    private var waveformTask: Task<Void, Never>?
     private var searchCache: [String: String] = [:]
 
     init(store: SessionStore) {
@@ -135,6 +142,9 @@ final class LibraryModel: ObservableObject {
         guard let item = selectedItem else {
             loadedKey = ""
             loadedAudioKey = ""
+            waveformTask?.cancel()
+            waveformTask = nil
+            waveformPeaks = []
             lines = []
             player.load(nil)
             return
@@ -156,6 +166,30 @@ final class LibraryModel: ObservableObject {
         guard key != loadedAudioKey else { return }
         loadedAudioKey = key
         player.load(audio)
+        loadWaveform(for: item, audio: audio)
+    }
+
+    private func loadWaveform(for item: Item, audio: URL?) {
+        waveformTask?.cancel()
+        waveformTask = nil
+        waveformPeaks = []
+        guard let audio else { return }
+        let folder = item.session.folder
+        if let saved = WaveformFile.load(from: folder) {
+            waveformPeaks = saved
+            return
+        }
+        let id = item.id
+        waveformTask = Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            guard let peaks = try? await WaveformFile.scan(audio), !Task.isCancelled else { return }
+            try? WaveformFile.save(peaks, to: folder)
+            await self.showWaveform(peaks, for: id)
+        }
+    }
+
+    private func showWaveform(_ peaks: [AudioLevels], for id: String) {
+        if selection == id { waveformPeaks = peaks }
     }
 
     /// 再生できる音声。録音中は無い
@@ -167,6 +201,10 @@ final class LibraryModel: ObservableObject {
 
     func setRecording(since: Date?) {
         if recordingSince != since { recordingSince = since }
+    }
+
+    func setMuted(_ muted: Bool) {
+        if isMuted != muted { isMuted = muted }
     }
 
     func setModelStatus(_ text: String?, failed: Bool) {
@@ -239,6 +277,38 @@ final class LibraryModel: ObservableObject {
         try? FileManager.default.trashItem(at: item.session.folder, resultingItemURL: nil)
         reload()
     }
+}
+
+/// 録音中の音の波形。録音の頭からの最大振幅を 0.1 秒ごとに持つ（3 時間で 10 万件、1 MB 弱）
+@MainActor
+final class WaveformModel: ObservableObject {
+    static let interval: TimeInterval = 0.1
+    @Published private(set) var peaks: [AudioLevels] = []
+
+    /// 録音開始からの経過時間の枡に置いて、時間軸を保つ。値は前回読んでからの最大振幅なので、
+    /// 読み取りが遅れて枡が飛んだ分も同じ値で埋める（無音で埋めると穴が開いて見える）
+    func append(_ levels: AudioLevels, elapsed: TimeInterval) {
+        let slot = Int(elapsed / Self.interval)
+        guard slot >= 0 else { return }
+        if slot < peaks.count {
+            // 早く来た読み取りは、今の枡とまとめる
+            guard let last = peaks.last else { return }
+            peaks[peaks.count - 1] = AudioLevels(system: max(last.system, levels.system), mic: max(last.mic, levels.mic))
+            return
+        }
+        // 大きく飛んだ分（スリープや時計の補正）は、同じ値を並べると壁になるので無音にする
+        let gap = slot - peaks.count
+        if gap > Self.maxFill {
+            peaks.append(contentsOf: repeatElement(AudioLevels(), count: gap - Self.maxFill))
+        }
+        peaks.append(contentsOf: repeatElement(levels, count: min(gap, Self.maxFill) + 1))
+    }
+
+    /// 遅れた読み取りを同じ値で埋める上限（枡の数）
+    private static let maxFill = 10
+
+    func reset() { peaks = [] }
+    func replace(_ peaks: [AudioLevels]) { self.peaks = peaks }
 }
 
 /// 音量。LevelMeters だけが見る。録音中だけでなく、ウィンドウを開いている間は録音前から測っている

@@ -262,14 +262,6 @@ private struct RecordBar: View {
         HStack(spacing: 10) {
             RecordButton(recording: model.recordingSince != nil, size: 44, action: model.actions.toggleRecording)
 
-            if let since = model.recordingSince {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(Format.clock(context.date.timeIntervalSince(since)))
-                        .font(.title3.monospacedDigit())
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-            }
             LevelMeters(model: model.levels)
         }
         // 両端のボタンと重ならないようにする
@@ -278,7 +270,7 @@ private struct RecordBar: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
         .overlay(alignment: .leading) {
-            microphoneMenu
+            microphoneControls
         }
         .overlay(alignment: .trailing) {
             GlassGroup {
@@ -288,17 +280,21 @@ private struct RecordBar: View {
         }
     }
 
-    /// 使うマイクの切り替え。設定（⌘,）と同じ内容を、録音を始める場所から直接選べるようにする
-    private var microphoneMenu: some View {
-        UpwardMenu(name: "マイク", items: microphoneItems) {
-            HStack(spacing: 3) {
-                Image(systemName: "mic").font(.system(size: 17))
-                Image(systemName: "chevron.up").font(.caption2.weight(.semibold))
+    /// マイクのアイコンはミュートの切り替え、隣の矢印は使うマイクの選択（設定（⌘,）と同じ内容）
+    private var microphoneControls: some View {
+        GlassGroup {
+            Button(action: model.actions.toggleMute) {
+                Image(systemName: model.isMuted ? "mic.slash" : "mic")
+                    .foregroundStyle(model.isMuted ? Theme.live : Color.primary)
             }
-            .foregroundStyle(.secondary)
-            .padding(.leading, 12)
-            .padding(.trailing, 6)
+            UpwardMenu(name: "マイク", items: microphoneItems) {
+                Image(systemName: "chevron.up")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14, height: 26)
+            }
         }
+        .padding(.leading, 8)
     }
 
     /// 開くたびに、その時つながっているマイクで作る
@@ -403,7 +399,7 @@ private struct Detail: View {
                 .id(item.id)
             if LibraryModel.playableAudio(of: item.session) != nil {
                 Divider()
-                PlayerBar(player: player)
+                PlayerBar(player: player, peaks: model.waveformPeaks)
             }
         }
         .onAppear {
@@ -587,10 +583,13 @@ private struct Detail: View {
                 )
             }
         case .recording:
-            VStack(spacing: 10) {
-                Image(systemName: "record.circle.fill").font(.largeTitle).foregroundStyle(.red)
-                Text("録音中").foregroundStyle(.secondary)
-            }
+            // このアプリが録っている録音でなければ（別のプロセスの録音など）、手元の波形は別物なので出さない
+            RecordingView(
+                waveform: model.waveform,
+                since: model.recordingSince,
+                startedAt: item.session.meta.startedAt,
+                stop: model.actions.toggleRecording
+            )
         case .recorded:
             VStack(spacing: 10) {
                 if model.isPending(item) {
@@ -636,6 +635,122 @@ private struct Detail: View {
                     .padding(.top, 6)
             }
         }
+    }
+}
+
+// MARK: - 録音中の画面
+
+/// ここまでの音の波形と経過時間。相手の音を上、自分の声を下に出す
+private struct RecordingView: View {
+    @ObservedObject var waveform: WaveformModel
+    /// このアプリで録音中なら、その開始時刻
+    let since: Date?
+    let startedAt: Date
+    let stop: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            Waveform(peaks: since != nil ? waveform.peaks : [], since: since ?? startedAt)
+                .frame(height: 220)
+            Spacer()
+            HStack {
+                Spacer()
+                RecordButton(recording: true, size: 56, action: stop)
+                Spacer()
+            }
+            .overlay(alignment: .trailing) {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(Format.clock(context.date.timeIntervalSince(since ?? startedAt)))
+                        .font(.system(size: 40, weight: .medium, design: .rounded).monospacedDigit())
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                .padding(.trailing, 24)
+            }
+            .padding(.bottom, 24)
+        }
+    }
+}
+
+/// 録音の波形。中央の線が今で、左へ過去が流れる。1 本が 0.1 秒。
+/// 位置は録音開始からの実時間で決めるので、音量の更新（0.1 秒おき）とは別に画面のリフレッシュごとに滑らかに動く
+private struct Waveform: View {
+    let peaks: [AudioLevels]
+    let since: Date
+
+    private static let barWidth: CGFloat = 2
+    private static let step: CGFloat = 3
+    private static let rulerHeight: CGFloat = 22
+    private static let pointsPerSecond = step / WaveformModel.interval
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 60)) { timeline in
+            Canvas { context, size in
+                let elapsed = timeline.date.timeIntervalSince(since)
+                let center = size.width / 2
+                let wave = CGRect(x: 0, y: 0, width: size.width, height: size.height - Self.rulerHeight)
+                let mid = wave.midY
+                let reach = wave.height / 2 - 6
+                func x(at seconds: TimeInterval) -> CGFloat { center - CGFloat(elapsed - seconds) * Self.pointsPerSecond }
+
+                context.fill(
+                    Path(CGRect(x: 0, y: mid - 0.5, width: size.width, height: 1)),
+                    with: .color(.secondary.opacity(0.35))
+                )
+
+                // 左端から今までに入る本数だけ描く。いちばん新しい本は中央で切る
+                let visibleSeconds = TimeInterval(center / Self.pointsPerSecond)
+                let first = max(0, Int((elapsed - visibleSeconds) / WaveformModel.interval) - 1)
+                var index = first
+                while index < peaks.count {
+                    let left = x(at: Double(index) * WaveformModel.interval)
+                    if left >= center { break }
+                    let width = min(Self.barWidth, center - left)
+                    let peak = peaks[index]
+                    let up = max(1, CGFloat(AudioLevels.meter(peak.system)) * reach)
+                    let down = max(1, CGFloat(AudioLevels.meter(peak.mic)) * reach)
+                    // 上が相手、下が自分。色では分けず、「今」の赤い線が埋もれないよう主色で描く
+                    context.fill(
+                        Path(roundedRect: CGRect(x: left, y: mid - up, width: width, height: up), cornerRadius: 1),
+                        with: .color(Theme.accent)
+                    )
+                    context.fill(
+                        Path(roundedRect: CGRect(x: left, y: mid, width: width, height: down), cornerRadius: 1),
+                        with: .color(Theme.accent)
+                    )
+                    index += 1
+                }
+
+                // 目盛りは 1 秒ごと、時刻は 10 秒ごと。右側（これから）にも出す
+                let firstSecond = max(0, Int((elapsed - visibleSeconds).rounded(.down)))
+                let lastSecond = Int((elapsed + TimeInterval((size.width - center) / Self.pointsPerSecond)).rounded(.up))
+                for seconds in firstSecond...max(firstSecond, lastSecond) {
+                    let tickX = x(at: Double(seconds))
+                    guard tickX >= 0, tickX <= size.width else { continue }
+                    let tall = seconds % 10 == 0
+                    context.fill(
+                        Path(CGRect(x: tickX, y: wave.maxY + 2, width: 1, height: tall ? 6 : 3)),
+                        with: .color(.secondary.opacity(0.5))
+                    )
+                    if tall {
+                        context.draw(
+                            Text(Format.clock(Double(seconds))).font(.caption2).foregroundStyle(.secondary),
+                            at: CGPoint(x: tickX + 1, y: wave.maxY + 15), anchor: .center
+                        )
+                    }
+                }
+
+                // 今の位置
+                context.fill(Path(CGRect(x: center - 1, y: wave.minY, width: 2, height: wave.height)), with: .color(Theme.live))
+            }
+        }
+        .overlay(alignment: .topLeading) { Text("相手").font(.caption).foregroundStyle(.secondary).padding(.leading, 4) }
+        .overlay(alignment: .bottomLeading) {
+            Text("自分").font(.caption).foregroundStyle(.secondary)
+                .padding(.leading, 4).padding(.bottom, Self.rulerHeight)
+        }
+        .padding(.horizontal, 20)
     }
 }
 
@@ -724,36 +839,38 @@ private struct LineRow: View {
 
 private struct PlayerBar: View {
     @ObservedObject var player: PlayerModel
+    let peaks: [AudioLevels]
 
     var body: some View {
-        VStack(spacing: 6) {
-            Slider(
-                value: Binding(get: { player.currentTime }, set: { player.seek(to: $0) }),
-                in: 0...max(player.duration, 0.1)
-            )
+        VStack(spacing: 4) {
+            OverviewWaveform(peaks: peaks, position: player.currentTime, duration: player.duration) { player.seek(to: $0) }
+                .frame(height: 44)
             HStack {
-                Text(Format.clock(player.currentTime))
+                Text("0:00")
                 Spacer()
                 Text(Format.clock(player.duration))
             }
-            .font(.caption.monospacedDigit())
+            .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
-            .overlay {
-                HStack(spacing: 22) {
+            HStack(spacing: 22) {
+                GlassGroup {
                     Button { player.skip(by: -15) } label: { Image(systemName: "gobackward.15") }
                     Button { player.togglePlayback() } label: {
-                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title)
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     }
                     Button { player.skip(by: 15) } label: { Image(systemName: "goforward.15") }
                 }
-                .buttonStyle(.plain)
-                .font(.title2)
-                .foregroundStyle(.primary)
+                Spacer()
+                speedMenu
+                Text(Format.clock(player.currentTime))
+                    .font(.system(size: 28, weight: .medium, design: .rounded).monospacedDigit())
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .overlay(alignment: .trailing) {
-                speedMenu.padding(.trailing, 52)
-            }
-            .padding(.bottom, 4)
+            .buttonStyle(.plain)
+            .font(.title2)
+            .foregroundStyle(.primary)
+            .padding(.top, 4)
         }
         .padding(.horizontal, 20)
         .padding(.top, 10)
@@ -766,6 +883,70 @@ private struct PlayerBar: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 2)
             }
+        }
+    }
+}
+
+/// 録音全体の波形と再生位置。クリックやドラッグでその位置へ飛ぶ
+private struct OverviewWaveform: View {
+    let peaks: [AudioLevels]
+    let position: Double
+    let duration: Double
+    let seek: (Double) -> Void
+
+    private static let step: CGFloat = 3
+    private static let barWidth: CGFloat = 2
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            Canvas { context, size in
+                let bars = max(1, Int(size.width / Self.step))
+                let mid = size.height / 2
+                let reach = mid - 2
+                context.fill(
+                    Path(CGRect(x: 0, y: mid - 0.5, width: size.width, height: 1)),
+                    with: .color(.secondary.opacity(0.3))
+                )
+                guard !peaks.isEmpty else { return }
+                // 横幅を音声の長さに割り当て、再生位置の線と同じ時間軸で描く
+                let span = duration > 0 ? duration : Double(peaks.count) * WaveformFile.interval
+                let playedBars = duration > 0 ? Int((position / duration * Double(bars)).rounded(.down)) : 0
+                for bar in 0..<bars {
+                    let from = Int(Double(bar) / Double(bars) * span / WaveformFile.interval)
+                    let to = max(from + 1, Int(Double(bar + 1) / Double(bars) * span / WaveformFile.interval))
+                    guard from < peaks.count else { break }
+                    var up: Float = 0
+                    var down: Float = 0
+                    for index in from..<min(to, peaks.count) {
+                        up = max(up, peaks[index].system)
+                        down = max(down, peaks[index].mic)
+                    }
+                    let x = CGFloat(bar) * Self.step
+                    let played = bar < playedBars
+                    let upHeight = max(1, CGFloat(AudioLevels.meter(up)) * reach)
+                    let downHeight = max(1, CGFloat(AudioLevels.meter(down)) * reach)
+                    context.fill(
+                        Path(CGRect(x: x, y: mid - upHeight, width: Self.barWidth, height: upHeight)),
+                        with: .color(played ? Theme.played : Theme.remaining)
+                    )
+                    context.fill(
+                        Path(CGRect(x: x, y: mid, width: Self.barWidth, height: downHeight)),
+                        with: .color(played ? Theme.played : Theme.remaining)
+                    )
+                }
+                if duration > 0 {
+                    let x = CGFloat(position / duration) * size.width
+                    context.fill(Path(CGRect(x: x - 1, y: 0, width: 2, height: size.height)), with: .color(Theme.played))
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0).onChanged { value in
+                    guard duration > 0 else { return }
+                    seek(min(max(0, Double(value.location.x / width)), 1) * duration)
+                }
+            )
         }
     }
 }

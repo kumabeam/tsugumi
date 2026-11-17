@@ -18,17 +18,54 @@ enum Snapshot {
 
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
-        if arguments.contains("--dark") { application.appearance = NSAppearance(named: .darkAqua) }
+        // オフスクリーンの描画では Liquid Glass の層が写らないので、macOS 25 以前の見た目で描く
+        Theme.usesLiquidGlass = false
+        // 指定が無ければライトで写す（写す人の Mac の設定に左右されないように）
+        application.appearance = NSAppearance(named: arguments.contains("--dark") ? .darkAqua : .aqua)
+
+        // 再生バーの波形。本体は裏で作るが、ここでは描く前に作って保存しておく
+        for session in store.sessions(with: [.done, .recorded, .failed, .cancelled])
+        where WaveformFile.load(from: session.folder) == nil {
+            guard let audio = session.audioURL else { continue }
+            let done = DispatchSemaphore(value: 0)
+            Task.detached {
+                if let peaks = try? await WaveformFile.scan(audio) { try? WaveformFile.save(peaks, to: session.folder) }
+                done.signal()
+            }
+            done.wait()
+        }
 
         let model = LibraryModel(store: store)
         model.reload()
         if model.items.indices.contains(index) { model.selection = model.items[index].id }
         if arguments.contains("--recording") {
             model.setRecording(since: Date().addingTimeInterval(-754))
+            // 会話らしい波形。決まった並びにして、写すたびに同じ絵になるようにする
+            var seed: UInt32 = 7
+            func next() -> Float {
+                seed = seed &* 1_664_525 &+ 1_013_904_223
+                return Float(seed >> 8) / Float(1 << 24)
+            }
+            // 写すまでに数秒かかるので、経過時間より少し先まで用意しておく（先の分は描かれない）
+            var peaks: [AudioLevels] = []
+            for index in 0..<7640 {
+                let phrase = (index / 25) % 7
+                let talking = phrase < 4
+                let system = talking ? 0.05 + next() * 0.5 : next() * 0.01
+                let mic = !talking && phrase != 6 ? 0.03 + next() * 0.35 : next() * 0.008
+                peaks.append(AudioLevels(system: system, mic: mic))
+            }
+            model.waveform.replace(peaks)
         }
         if arguments.contains("--recording") || arguments.contains("--levels") {
             model.levels.setLive(true)
             model.levels.set(AudioLevels(system: 0.3, mic: 0.02))
+        }
+        if arguments.contains("--muted") { model.setMuted(true) }
+        // --position <秒>: 再生位置を進めた状態で写す
+        if let flag = arguments.firstIndex(of: "--position"), arguments.indices.contains(flag + 1),
+           let seconds = Double(arguments[flag + 1]) {
+            model.player.seek(to: seconds)
         }
         if arguments.contains("--model") {
             model.setModelStatus("文字起こしモデルを準備中 42%（1.3 GB / 3.1 GB）", failed: false)

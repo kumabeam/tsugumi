@@ -104,7 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 self?.settings.refresh()
                 self?.restartMonitor()
             },
-            transcribe: { [weak self] session in self?.retry(session) }
+            transcribe: { [weak self] session in self?.retry(session) },
+            toggleMute: { [weak self] in self?.toggleMute() }
         )
         installLibraryKeys()
         settings.changeBaseFolder = { [weak self] in self?.changeBaseFolder() }
@@ -350,9 +351,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func startLevelTimer() {
         levelTimer?.invalidate()
-        levelTimer = Timer.scheduledTimer(withTimeInterval: Self.levelInterval, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: Self.levelInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.levelTick() }
         }
+        // メニューを開いている間も止めない
+        RunLoop.main.add(timer, forMode: .common)
+        levelTimer = timer
     }
 
     private func stopLevelTimer() {
@@ -365,13 +369,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if let recorder {
             let levels = recorder.takeLevels()
             library.levels.set(levels)
+            if case .recording(_, let since) = state {
+                library.waveform.append(levels, elapsed: Date().timeIntervalSince(since))
+            }
             if levels.hasSound {
                 lastSoundAt = Date()
                 warnedSilence = false
             }
         } else if let monitor {
-            library.levels.set(monitor.takeLevels())
+            var levels = monitor.takeLevels()
+            // ミュート中は録音しても無音になるので、録音前の表示も合わせる
+            if isMuted { levels.mic = 0 }
+            library.levels.set(levels)
         }
+    }
+
+    /// マイクのミュート。録音中は自分のトラックが無音になる。相手の音は録り続ける。起動し直すと解除
+    private var isMuted = false {
+        didSet {
+            recorder?.isMuted = isMuted
+            library.setMuted(isMuted)
+        }
+    }
+
+    @objc private func toggleMute() {
+        isMuted.toggle()
     }
 
     /// スリープや権限の取り消しで勝手に止まったとき。少し待って測り直す
@@ -534,6 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 session.meta.microphone = Microphones.current()?.name
                 try session.save()
                 let recorder = Recorder()
+                recorder.isMuted = isMuted
                 recorder.onInterrupted = { [weak self] _ in self?.recordingInterrupted() }
                 recorder.onWriteError = { [weak self] error in
                     // 止めてから知るのでは遅い（マイクを替えれば残りは録れる）
@@ -546,14 +569,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                     throw error
                 }
                 self.recorder = recorder
-                state = .recording(session, since: Date())
-                lastSoundAt = Date()
+                let since = Date()
+                state = .recording(session, since: since)
+                lastSoundAt = since
                 warnedSilence = false
+                library.waveform.reset()
+                // 音量の読み取りは開始時刻と同じ位相で刻む（一覧の読み直しの後に始めると、波形の枡とずれて新しい本が跳ぶ）
+                startLevelTimer()
                 library.reload()
+                // 録音中に別の録音を見ることは少ないので、始めた録音の画面に移る
+                library.selection = session.folder.path
                 timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                     Task { @MainActor in self?.recordingTick() }
                 }
-                startLevelTimer()
             } catch {
                 state = .idle
                 showAlert(title: "録音を開始できませんでした", message: error.localizedDescription)
@@ -570,7 +598,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 warnedSilence = true
                 notifier.notify(
                     title: "5分間、音が届いていません",
-                    body: "相手の音もマイクの音も入っていません。マイクの選択と、音が Mac から出ているかを確認してください。"
+                    body: isMuted
+                        ? "相手の音が入っていません。音が Mac から出ているかを確認してください。マイクはミュート中です。"
+                        : "相手の音もマイクの音も入っていません。マイクの選択と、音が Mac から出ているかを確認してください。"
                 )
             }
         }
@@ -606,6 +636,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if let onDisk = Session.load(folder: session.folder) { session.meta.title = onDisk.meta.title }
         session.meta.status = .recorded
         try? session.save()
+        try? WaveformFile.save(library.waveform.peaks, to: session.folder)
         // 録音中に付けられた名前にフォルダ名を合わせる。文字起こしがフォルダを使い始める前に済ませる
         let wasSelected = library.selection == recorded.folder.path
         if let moved = try? store.renameFolder(of: session) { session = moved }
@@ -791,6 +822,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         case .idle:
             add("録音を開始", #selector(toggleRecording), key: "r")
         }
+        add("マイクをミュート", #selector(toggleMute), checked: isMuted)
         if let modelText = models.progressText {
             add(modelText, nil)
             if case .failed = models.state { add("モデルの取得をやり直す", #selector(retryModelDownload)) }

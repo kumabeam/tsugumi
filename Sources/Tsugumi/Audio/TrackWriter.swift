@@ -25,7 +25,8 @@ final class TrackWriter {
     /// - Parameters:
     ///   - origin: 録音全体の開始時刻。2トラックを同じ時間軸に並べるための基準。
     ///   - elapsed: 録音開始からの実時間（秒）。時刻が信用できないときの代わりに使う。
-    func append(_ sampleBuffer: CMSampleBuffer, origin: CMTime, elapsed: Double) throws {
+    ///   - muted: 音の代わりに無音を書く（ミュート中）。時間軸はそのまま進む
+    func append(_ sampleBuffer: CMSampleBuffer, origin: CMTime, elapsed: Double, muted: Bool = false) throws {
         guard let input = try Self.pcmBuffer(from: sampleBuffer) else { return }
 
         var offset = (sampleBuffer.presentationTimeStamp - origin).seconds
@@ -41,7 +42,8 @@ final class TrackWriter {
             if gap > gapTolerance { try wav.appendSilence(frames: gap) }
         }
 
-        let samples = try convert(input)
+        var samples = try convert(input)
+        if muted { samples = [Int16](repeating: 0, count: samples.count) }
         let loudest = samples.reduce(Int16(0)) { max($0, $1 == .min ? .max : abs($1)) }
         peak.withValue { $0 = max($0, Float(loudest) / 32767) }
         try wav.append(samples)
