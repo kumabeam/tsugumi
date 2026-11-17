@@ -4,6 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Command Line Tools 27 の既定 SDK は SwiftUI の @State がマクロになっていて、そのプラグインが
+# CLT に無いためビルドできない。既定が 27 以降のときだけ、同じ Liquid Glass の API を持つ 26 系の SDK を使う
+if [ -z "${SDKROOT:-}" ] && [ "$(xcrun --show-sdk-version | cut -d. -f1)" -ge 27 ]; then
+  sdk=$( (ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX26*.sdk 2>/dev/null || true) | sort -V | tail -1)
+  if [ -n "$sdk" ]; then export SDKROOT="$sdk"; fi
+fi
 swift build -c release
 
 APP="build/Tsugumi.app"

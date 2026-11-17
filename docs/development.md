@@ -100,9 +100,12 @@ ScreenCaptureKit ─┬─ Mac から出た音 ─→ system.wav ─┐
 .build/release/Tsugumi transcribe <音声ファイル> <出力フォルダ>
 .build/release/Tsugumi resume <出力フォルダ>          # 途中で終わった録音を拾い直す
 .build/release/Tsugumi record <秒数> <出力フォルダ>     # 実行元のターミナルに画面収録とマイクの許可が要る
-.build/release/Tsugumi selftest <出力フォルダ>        # 合成した音で変換と時間合わせ、待ち行列の安全を確かめる
+# スナップショットのガラスは macOS 25 以前の見た目（Liquid Glass はオフスクリーンに写らない）。本物は実機で見る
+# Command Line Tools 27 以降は、ビルドした実行ファイルが隣の Sparkle.framework を見つけられないので
+# DYLD_FRAMEWORK_PATH=.build/release を付けて実行する（build-app.sh は 26 系の SDK を自動で選ぶ）
+.build/release/Tsugumi selftest <出力フォルダ>        # 合成した音で変換と時間合わせ、待ち行列の安全、フォルダ名の付け替えを確かめる
 .build/release/Tsugumi fetch-model <保存フォルダ>      # 初回起動と同じモデルのダウンロードを試す（約3GB）
-.build/release/Tsugumi snapshot <保存フォルダ> <出力.png> [番号] [--recording] [--model] [--find <語>] [--settings] [--pending] [--levels] [--dark]
+.build/release/Tsugumi snapshot <保存フォルダ> <出力.png> [番号] [--recording] [--model] [--find <語>] [--settings] [--pending] [--levels] [--muted] [--position <秒>] [--dark]
 ```
 
 録音中・文字起こし中のスリープ防止が効いているかは `pmset -g assertions | grep Tsugumi` で見える。10分の期限付きで5分ごとに取り直しているので、放し忘れても10分で消える。アプリが終了したときはすぐ消える。
